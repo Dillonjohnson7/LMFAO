@@ -20,8 +20,7 @@ function canvasToPngBlob(c: HTMLCanvasElement): Promise<Blob> {
   });
 }
 
-const README = `LMFAO augmented dataset
-=======================
+const README = `# LMFAO augmented dataset
 
 Created in-browser from a single source clip with the LMFAO augmentation demo.
 
