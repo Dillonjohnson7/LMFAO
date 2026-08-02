@@ -22,7 +22,7 @@ have.
   clips, so you spend less time teleoperating and more time training.
 - **Policies that survive the real world.** Randomized lighting, occlusion, and
   framing stop a policy from overfitting to the one scene it was recorded in.
-- **Cheap and reproducible.** Pure NumPy on CPU, seeded end to end. Shape and
+- **Cheap and reproducible.** Runs on CPU, seeded end to end. Shape and
   dtype are preserved and every applied augmentation is recorded in metadata, so
   augmented clips drop straight back into training and stay auditable.
 - **Modular by design.** Every effect is an independent plug-in. Add or swap one
@@ -72,12 +72,17 @@ Shipping today:
 
 - **lighting:** `lighting.brightness`, `lighting.contrast`,
   `lighting.color_temperature`
+- **noise:** `noise.gaussian`, `noise.uniform`
 - **occlusion:** `occlusion.sequence_box`, `occlusion.border_intrusion`,
   `occlusion.moving_box`
 - **spatial:** `spatial.random_crop`
 
-Sensor noise and further effects are on the way. To list exactly what is
-registered in your install:
+Noise draws its random numbers on a GPU when one happens to be available, which
+is roughly 30x faster than NumPy. Nothing changes at the call site and no GPU is
+required.
+
+Further effects are on the way. To list exactly what is registered in your
+install:
 
 ```python
 from lmfao import list_augmenter_info

@@ -7,6 +7,6 @@ When adding a new feature:
 3. Import the package here so it is registered when `lmfao` is imported.
 """
 
-from . import lighting, occlusion, spatial
+from . import lighting, noise, occlusion, spatial
 
-__all__ = ["lighting", "occlusion", "spatial"]
+__all__ = ["lighting", "noise", "occlusion", "spatial"]
