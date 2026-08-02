@@ -1,7 +1,7 @@
-"""Occlusion feature modules.
+"""Occlusion feature family."""
 
-Ryan's occlusion features should live in this package. Import implemented
-feature modules here so they register with LMFAO.
-"""
+from . import border_intrusion
+from . import moving_box
+from . import sequence_box
 
 __all__: list[str] = []

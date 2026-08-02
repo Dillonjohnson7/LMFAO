@@ -7,4 +7,6 @@ When adding a new feature:
 3. Import the module here so it is registered when `lmfao` is imported.
 """
 
+from . import occlusion
+
 __all__: list[str] = []

@@ -59,9 +59,13 @@ class DummyPassthrough(AugmentationFeature):
         return output, metadata
 
 
-def test_no_builtin_features_are_registered_yet():
-    assert list_features() == ["test.passthrough"]
-    [info] = list_feature_info()
+def test_builtin_occlusion_features_are_registered():
+    features = list_features()
+    assert "occlusion.border_intrusion" in features
+    assert "occlusion.moving_box" in features
+    assert "occlusion.sequence_box" in features
+    assert "test.passthrough" in features
+    info = next(item for item in list_feature_info() if item.name == "test.passthrough")
     assert info.name == "test.passthrough"
     assert info.tags == ("test",)
     assert info.backends == ("torch_cpu", "cuda")
