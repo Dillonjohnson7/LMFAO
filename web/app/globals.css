@@ -674,8 +674,8 @@ code {
   opacity: 0.72;
 }
 .clean-tile.sel .clean-thumb {
-  border-color: var(--ink);
-  box-shadow: 0 0 0 1px var(--ink);
+  border-color: var(--fam, var(--ink));
+  box-shadow: 0 0 0 1px var(--fam, var(--ink));
 }
 .clean-frame {
   position: absolute;
@@ -699,8 +699,8 @@ code {
   background: rgba(0, 0, 0, 0.25);
 }
 .clean-tile.sel .clean-box {
-  background: var(--sel);
-  border-color: var(--sel);
+  background: var(--fam, var(--sel));
+  border-color: var(--fam, var(--sel));
 }
 .clean-tile.sel .clean-box::after {
   content: "";
@@ -724,12 +724,31 @@ code {
 .clean-num {
   font-family: var(--mono);
   font-size: 11px;
-  color: var(--muted);
+  color: var(--fam, var(--muted));
 }
 .clean-label {
   font-size: 15px;
   font-weight: 600;
   letter-spacing: -0.005em;
+}
+.clean-fam {
+  margin-left: auto;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--fam, var(--muted));
+}
+.clean-fam::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--fam, var(--muted));
 }
 .clean-reg {
   display: block;

@@ -1,7 +1,7 @@
 "use client";
 
-import { useRef } from "react";
-import { type Family } from "@/lib/augmentations";
+import { type CSSProperties, useRef } from "react";
+import { FAMILY_COLORS, type Family } from "@/lib/augmentations";
 import { useFramePlayer } from "@/lib/useFramePlayer";
 
 export interface TileCleanProps {
@@ -31,13 +31,17 @@ export default function TileClean({
 }: TileCleanProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const frameNumRef = useRef<HTMLSpanElement | null>(null);
+  const color = FAMILY_COLORS[family];
 
   useFramePlayer(canvasRef, frames, frameDurationMs, startTime, (idx) => {
     if (frameNumRef.current) frameNumRef.current.textContent = String(idx).padStart(2, "0");
   });
 
   return (
-    <figure className={`clean-tile${selected ? " sel" : ""}`}>
+    <figure
+      className={`clean-tile${selected ? " sel" : ""}`}
+      style={{ "--fam": color } as CSSProperties}
+    >
       <button
         type="button"
         className="clean-thumb"
@@ -55,6 +59,7 @@ export default function TileClean({
         <div className="clean-caphead">
           <span className="clean-num">{String(index).padStart(2, "0")}</span>
           <span className="clean-label">{label}</span>
+          <span className="clean-fam">{family}</span>
         </div>
         <code className="clean-reg">{registered === "none" ? family : registered}</code>
         <p className="clean-blurb">{blurb}</p>
