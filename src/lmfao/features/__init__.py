@@ -4,9 +4,9 @@ When adding a new feature:
 
 1. Create a module, for example `src/lmfao/features/occlusion/sequence_box.py`.
 2. Decorate the augmenter class with `@register_augmenter("occlusion.sequence_box")`.
-3. Import the class here so it is registered when `lmfao` is imported.
+3. Import the package here so it is registered when `lmfao` is imported.
 """
 
-from . import occlusion
+from . import lighting, occlusion, spatial
 
-__all__ = ["occlusion"]
+__all__ = ["lighting", "occlusion", "spatial"]
