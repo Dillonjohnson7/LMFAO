@@ -2,9 +2,11 @@
 
 When adding a new feature:
 
-1. Create a module in this package, for example `src/lmfao/features/lighting.py`.
-2. Decorate the augmenter class with `@register_augmenter("lighting")`.
+1. Create a module, for example `src/lmfao/features/occlusion/sequence_box.py`.
+2. Decorate the augmenter class with `@register_augmenter("occlusion.sequence_box")`.
 3. Import the class here so it is registered when `lmfao` is imported.
 """
 
-__all__: list[str] = []
+from . import occlusion
+
+__all__ = ["occlusion"]

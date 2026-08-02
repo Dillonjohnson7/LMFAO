@@ -50,6 +50,47 @@ The central registry lives in `src/lmfao/registry.py`. Feature owners should
 not edit its internals for normal feature work; they should use the
 `@register_augmenter(...)` decorator from their own module.
 
+## Occlusion Features
+
+Occlusion has several related strategies, so keep it as a feature family:
+
+```text
+src/lmfao/features/
+└── occlusion/
+    ├── __init__.py
+    ├── sequence_box.py
+    ├── border_intrusion.py
+    ├── moving_box.py
+    └── utils.py
+
+tests/
+└── features/
+    └── occlusion/
+        └── test_occlusion_features.py
+```
+
+Recommended initial occlusion augmenters:
+
+- `occlusion.sequence_box`: samples one rectangular mask and applies it to the
+  same image region across all observation frames
+- `occlusion.border_intrusion`: masks a strip entering from the top, bottom,
+  left, or right camera border
+- `occlusion.moving_box`: samples one mask and moves it smoothly through the
+  observation sequence
+
+Import the occlusion package from `src/lmfao/features/__init__.py`, and import
+each occlusion module from `src/lmfao/features/occlusion/__init__.py`, so every
+augmenter registers when `lmfao` is imported.
+
+Use dotted names so the central hub stays flat but browsable:
+
+- `lighting.shadow`
+- `lighting.rgb_shift`
+- `noise.gaussian`
+- `occlusion.sequence_box`
+- `occlusion.border_intrusion`
+- `occlusion.moving_box`
+
 ## Choosing Features
 
 The pipeline can be built from config:
@@ -58,10 +99,14 @@ The pipeline can be built from config:
 pipeline = AugmentationPipeline.from_config(
     [
         {
-            "name": "feature_name",
-            "params": {"strength": 0.5},
+            "name": "occlusion.sequence_box",
+            "params": {"box_area_range": (0.05, 0.20), "fill": "mean"},
             "probability": 0.75,
             "enabled": True,
+        },
+        {
+            "name": "occlusion.border_intrusion",
+            "params": {"edges": ("bottom",), "max_fraction": 0.2},
         }
     ],
     seed=42,
