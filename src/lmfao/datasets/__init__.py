@@ -13,5 +13,13 @@ LeRobot reader/writer that populates it can live behind an optional extra.
 """
 
 from lmfao.datasets.episode import Episode, stack_frames
+from lmfao.datasets.lerobot import read_lerobot_dataset, write_lerobot_dataset
+from lmfao.datasets.poses import assume_camera_track
 
-__all__ = ["Episode", "stack_frames"]
+__all__ = [
+    "Episode",
+    "stack_frames",
+    "read_lerobot_dataset",
+    "write_lerobot_dataset",
+    "assume_camera_track",
+]

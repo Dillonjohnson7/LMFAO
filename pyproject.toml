@@ -13,10 +13,19 @@ dependencies = [
     "numpy>=1.23",
 ]
 
+[project.scripts]
+lmfao = "lmfao.cli:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=7",
     "ruff>=0.8",
+]
+# Reading/writing real LeRobot datasets (video shards + parquet) needs a video
+# codec and a parquet reader; kept optional so the core stays numpy-only.
+lerobot = [
+    "pyarrow>=14",
+    "av>=11",
 ]
 # The miniworld generator ships a complete numpy-only reference backend, so the
 # core install needs nothing extra to run it. This optional extra pulls the
