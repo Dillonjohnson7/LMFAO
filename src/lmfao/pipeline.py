@@ -1,30 +1,29 @@
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping, Optional, Sequence
+from typing import Any, Iterable, Mapping, Optional, Sequence, Union
 
-import numpy as np
-
-from lmfao.base import Augmenter, Metadata, Video
-from lmfao.registry import build_augmenter
+from lmfao.base import KernelFeature, KernelRuntime, Metadata, Video
+from lmfao.registry import build_kernel_feature
 
 
 @dataclass(frozen=True)
-class AugmentationStep:
-    augmenter: Augmenter
+class KernelStep:
+    feature: KernelFeature
     probability: float = 1.0
 
 
-class AugmentationPipeline:
-    """Composable video augmentation pipeline."""
+class KernelPipeline:
+    """Lightweight GPU kernel launch pipeline."""
 
-    def __init__(self, steps: Sequence[Augmenter | AugmentationStep], seed: Optional[int] = None) -> None:
-        self.steps = [step if isinstance(step, AugmentationStep) else AugmentationStep(step) for step in steps]
+    def __init__(self, steps: Sequence[Union[KernelFeature, KernelStep]], seed: Optional[int] = None) -> None:
+        self.steps = [step if isinstance(step, KernelStep) else KernelStep(step) for step in steps]
         self.seed = seed
 
     @classmethod
-    def from_config(cls, configs: Iterable[dict[str, Any]], seed: Optional[int] = None) -> "AugmentationPipeline":
-        steps: list[AugmentationStep] = []
+    def from_config(cls, configs: Iterable[dict[str, Any]], seed: Optional[int] = None) -> "KernelPipeline":
+        steps: list[KernelStep] = []
         for config in configs:
             item = dict(config)
             name = item.pop("name")
@@ -40,25 +39,29 @@ class AugmentationPipeline:
             if not enabled:
                 continue
 
-            steps.append(AugmentationStep(build_augmenter(name, **params), probability=probability))
+            steps.append(KernelStep(build_kernel_feature(name, **params), probability=probability))
         return cls(steps, seed=seed)
 
-    def __call__(self, video: Video, metadata: Optional[Mapping[str, Any]] = None) -> tuple[Video, Metadata]:
-        rng = np.random.default_rng(self.seed)
-        output = video
+    def __call__(
+        self,
+        video: Video,
+        runtime: KernelRuntime,
+        metadata: Optional[Mapping[str, Any]] = None,
+    ) -> tuple[Video, Metadata]:
+        rng = random.Random(self.seed)
         run_metadata: Metadata = dict(metadata or {})
 
         applied: list[str] = []
         skipped: list[str] = []
         for step in self.steps:
-            augmenter = step.augmenter
+            feature = step.feature
             if rng.random() > step.probability:
-                skipped.append(augmenter.name)
+                skipped.append(feature.name)
                 continue
 
-            output, run_metadata = augmenter(output, run_metadata, rng)
-            applied.append(augmenter.name)
+            run_metadata = feature(video, runtime, run_metadata)
+            applied.append(feature.name)
 
         run_metadata["augmentations"] = applied
         run_metadata["skipped_augmentations"] = skipped
-        return output, run_metadata
+        return video, run_metadata

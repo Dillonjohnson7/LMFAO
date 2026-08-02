@@ -2,9 +2,9 @@
 
 Lightweight Modular Feature-Based Augmentation Operation.
 
-LMFAO is a small central library for video data augmentation. Each augmentation
-feature lives in its own module, registers itself by name, and can be composed
-with other features through a shared pipeline.
+LMFAO is a small central library for GPU-backed video data augmentation. Each
+feature lives in its own module, registers itself by name, and contributes a
+thin kernel launch wrapper that can be selected through a shared pipeline.
 
 ## Install
 
@@ -14,34 +14,30 @@ pip install -e ".[dev]"
 
 ## Basic Usage
 
-Videos are represented as NumPy arrays with shape:
-
-```text
-(frames, height, width, channels)
-```
+Videos should stay GPU-resident. The core package treats the video as an opaque
+handle owned by your runtime, such as a CUDA buffer, PyTorch tensor, CuPy array,
+or custom device allocation.
 
 Example:
 
 ```python
-import numpy as np
+from lmfao import KernelPipeline
 
-from lmfao import AugmentationPipeline
+video = runtime.upload_video(...)
 
-video = np.full((16, 64, 64, 3), 128, dtype=np.uint8)
-
-pipeline = AugmentationPipeline.from_config(
+pipeline = KernelPipeline.from_config(
     [
         # Add registered feature configs here, for example:
-        # {"name": "lighting", "params": {"strength": 0.5}, "probability": 0.75},
+        # {"name": "lighting.shadow", "params": {"strength": 0.5}, "probability": 0.75},
     ],
     seed=42,
 )
 
-augmented_video, metadata = pipeline(video, metadata={"source": "demo"})
+augmented_video, metadata = pipeline(video, runtime, metadata={"source": "demo"})
 ```
 
 No feature implementations are included yet. Lighting changes, occlusions,
-noise, and other augmentations should be added as separate feature modules.
+noise, and other augmentations should be added as separate GPU kernel features.
 
 ## Adding a Feature
 
@@ -51,28 +47,31 @@ pipeline.
 ```python
 from dataclasses import dataclass
 
-import numpy as np
-
-from lmfao.base import Augmenter, Metadata, Video
-from lmfao.registry import register_augmenter
+from lmfao.base import KernelFeature, KernelRuntime, Metadata, Video
+from lmfao.registry import register_kernel_feature
 
 
-@register_augmenter(
-    "my_feature",
-    tags=("lighting",),
+@register_kernel_feature(
+    "lighting.my_feature",
+    tags=("lighting", "gpu"),
     description="Short description shown by the central feature hub.",
 )
 @dataclass
-class MyFeature(Augmenter):
+class MyFeature(KernelFeature):
     strength: float = 1.0
 
-    def apply(self, video: Video, metadata: Metadata, rng: np.random.Generator):
-        augmented = video.copy()
-        # Modify augmented here.
+    def launch(self, video: Video, runtime: KernelRuntime, metadata: Metadata):
+        runtime.launch_kernel(
+            kernel_name="lighting.my_feature",
+            grid=("TODO",),
+            block=("TODO",),
+            args=[video, self.strength],
+            stream=None,
+        )
         metadata.setdefault("augmentation_params", {})[self.name] = {
             "strength": self.strength,
         }
-        return augmented, metadata
+        return metadata
 ```
 
 Then import it from `src/lmfao/features/__init__.py` so it is registered when

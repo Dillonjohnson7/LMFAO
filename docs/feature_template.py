@@ -2,25 +2,28 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import numpy as np
-
-from lmfao.base import Augmenter, Metadata, Video
-from lmfao.registry import register_augmenter
+from lmfao.base import KernelFeature, KernelRuntime, Metadata, Video
+from lmfao.registry import register_kernel_feature
 
 
-@register_augmenter(
-    "feature_name",
-    tags=("category",),
+@register_kernel_feature(
+    "category.feature_name",
+    tags=("category", "gpu"),
     description="Short human-readable description for the central hub.",
 )
 @dataclass
-class FeatureName(Augmenter):
+class FeatureName(KernelFeature):
     strength: float = 1.0
 
-    def apply(self, video: Video, metadata: Metadata, rng: np.random.Generator) -> tuple[Video, Metadata]:
-        augmented = video.copy()
-
+    def launch(self, video: Video, runtime: KernelRuntime, metadata: Metadata) -> Metadata:
+        runtime.launch_kernel(
+            kernel_name="category.feature_name",
+            grid=("TODO",),
+            block=("TODO",),
+            args=[video, self.strength],
+            stream=None,
+        )
         metadata.setdefault("augmentation_params", {})[self.name] = {
             "strength": self.strength,
         }
-        return augmented, metadata
+        return metadata
