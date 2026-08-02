@@ -29,6 +29,7 @@ def test_registered_augmenters_are_visible_in_hub():
 
     for name in ("lighting.brightness", "lighting.color_temperature", "lighting.contrast"):
         assert "lighting" in info_by_name[name].tags
+    assert "spatial" in info_by_name["spatial.random_crop"].tags
 
     assert "spatial" in info_by_name["spatial.random_crop"].tags
 
