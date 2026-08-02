@@ -13,13 +13,22 @@ class TestPassthrough(Augmenter):
 
 
 def test_registered_augmenters_are_visible_in_hub():
-    assert list_augmenters() == ["spatial.random_crop", "test_passthrough"]
+    assert list_augmenters() == [
+        "lighting.brightness",
+        "lighting.color_temperature",
+        "lighting.contrast",
+        "spatial.random_crop",
+        "test_passthrough",
+    ]
 
     info_by_name = {info.name: info for info in list_augmenter_info()}
 
     passthrough = info_by_name["test_passthrough"]
     assert passthrough.tags == ("test",)
     assert passthrough.description == "A test-only passthrough augmenter."
+
+    for name in ("lighting.brightness", "lighting.color_temperature", "lighting.contrast"):
+        assert "lighting" in info_by_name[name].tags
 
     assert "spatial" in info_by_name["spatial.random_crop"].tags
 

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from importlib import import_module
-from typing import Any, Dict, Iterable, Sequence, Type
+from typing import Any
 
 from lmfao.base import Augmenter
 
@@ -10,7 +11,7 @@ from lmfao.base import Augmenter
 @dataclass(frozen=True)
 class AugmenterInfo:
     name: str
-    cls: Type[Augmenter]
+    cls: type[Augmenter]
     tags: tuple[str, ...]
     description: str
 
@@ -19,12 +20,12 @@ class AugmenterRegistry:
     """Central registry for feature modules."""
 
     def __init__(self) -> None:
-        self._augmenters: Dict[str, AugmenterInfo] = {}
+        self._augmenters: dict[str, AugmenterInfo] = {}
 
     def register(
         self,
         name: str,
-        augmenter_cls: Type[Augmenter],
+        augmenter_cls: type[Augmenter],
         tags: Sequence[str] = (),
         description: str = "",
     ) -> None:
@@ -41,7 +42,7 @@ class AugmenterRegistry:
             description=description or (augmenter_cls.__doc__ or "").strip(),
         )
 
-    def get(self, name: str) -> Type[Augmenter]:
+    def get(self, name: str) -> type[Augmenter]:
         try:
             return self._augmenters[name].cls
         except KeyError as exc:
@@ -71,7 +72,7 @@ registry = AugmenterRegistry()
 def register_augmenter(name: str, tags: Sequence[str] = (), description: str = ""):
     """Decorator used by feature owners to expose their augmenter."""
 
-    def decorator(augmenter_cls: Type[Augmenter]) -> Type[Augmenter]:
+    def decorator(augmenter_cls: type[Augmenter]) -> type[Augmenter]:
         registry.register(name, augmenter_cls, tags=tags, description=description)
         augmenter_cls.name = name
         return augmenter_cls
@@ -79,7 +80,7 @@ def register_augmenter(name: str, tags: Sequence[str] = (), description: str = "
     return decorator
 
 
-def get_augmenter(name: str) -> Type[Augmenter]:
+def get_augmenter(name: str) -> type[Augmenter]:
     return registry.get(name)
 
 

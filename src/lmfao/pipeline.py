@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping, Optional, Sequence
+from typing import Any
 
 import numpy as np
 
@@ -18,12 +19,12 @@ class AugmentationStep:
 class AugmentationPipeline:
     """Composable video augmentation pipeline."""
 
-    def __init__(self, steps: Sequence[Augmenter | AugmentationStep], seed: Optional[int] = None) -> None:
+    def __init__(self, steps: Sequence[Augmenter | AugmentationStep], seed: int | None = None) -> None:
         self.steps = [step if isinstance(step, AugmentationStep) else AugmentationStep(step) for step in steps]
         self.seed = seed
 
     @classmethod
-    def from_config(cls, configs: Iterable[dict[str, Any]], seed: Optional[int] = None) -> "AugmentationPipeline":
+    def from_config(cls, configs: Iterable[dict[str, Any]], seed: int | None = None) -> AugmentationPipeline:
         steps: list[AugmentationStep] = []
         for config in configs:
             item = dict(config)
@@ -43,7 +44,7 @@ class AugmentationPipeline:
             steps.append(AugmentationStep(build_augmenter(name, **params), probability=probability))
         return cls(steps, seed=seed)
 
-    def __call__(self, video: Video, metadata: Optional[Mapping[str, Any]] = None) -> tuple[Video, Metadata]:
+    def __call__(self, video: Video, metadata: Mapping[str, Any] | None = None) -> tuple[Video, Metadata]:
         rng = np.random.default_rng(self.seed)
         output = video
         run_metadata: Metadata = dict(metadata or {})
