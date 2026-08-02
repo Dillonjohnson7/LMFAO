@@ -17,6 +17,10 @@ def test_registered_augmenters_are_visible_in_hub():
         "lighting.brightness",
         "lighting.color_temperature",
         "lighting.contrast",
+        "occlusion.border_intrusion",
+        "occlusion.moving_box",
+        "occlusion.sequence_box",
+        "spatial.random_crop",
         "test_passthrough",
     ]
 
@@ -28,6 +32,9 @@ def test_registered_augmenters_are_visible_in_hub():
 
     for name in ("lighting.brightness", "lighting.color_temperature", "lighting.contrast"):
         assert "lighting" in info_by_name[name].tags
+    for name in ("occlusion.border_intrusion", "occlusion.moving_box", "occlusion.sequence_box"):
+        assert "occlusion" in info_by_name[name].tags
+    assert "spatial" in info_by_name["spatial.random_crop"].tags
 
 
 def test_pipeline_preserves_shape_and_dtype():
