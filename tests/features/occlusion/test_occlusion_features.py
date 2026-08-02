@@ -23,7 +23,6 @@ def test_sequence_box_masks_same_region_across_frames_and_records_metadata():
                 "params": {
                     "box_area_range": (0.20, 0.20),
                     "aspect_ratio_range": (1.0, 1.0),
-                    "fill": "black",
                 },
             }
         ],
@@ -50,7 +49,6 @@ def test_border_intrusion_masks_configured_edge():
         "occlusion.border_intrusion",
         edges=("bottom",),
         max_fraction=0.20,
-        fill=(12, 34, 56),
     )
 
     augmented, metadata = augmenter(video, rng=np.random.default_rng(4))
@@ -59,7 +57,7 @@ def test_border_intrusion_masks_configured_edge():
 
     assert region["edge"] == "bottom"
     assert region["height"] >= 1
-    assert np.all(augmented[:, top:, :, :] == np.array([12, 34, 56], dtype=np.uint8))
+    assert np.all(augmented[:, top:, :, :] == 0)
     assert np.all(augmented[:, :top, :, :] == 100)
 
 
@@ -70,7 +68,6 @@ def test_moving_box_records_smooth_positions_and_preserves_video_contract():
         box_area_range=(0.10, 0.10),
         aspect_ratio_range=(1.0, 1.0),
         velocity_range=(1.0, 1.0),
-        fill="white",
         edge_bounce=False,
     )
 
@@ -84,7 +81,8 @@ def test_moving_box_records_smooth_positions_and_preserves_video_contract():
     assert positions[1]["top"] >= positions[0]["top"]
     assert positions[1]["left"] >= positions[0]["left"]
     assert params["temporal_mode"] == "smooth_motion"
-    assert np.any(augmented != video)
+    assert np.any(augmented == 0)
+    assert params["fill"] == "black"
 
 
 def test_occlusion_config_validation():
@@ -96,3 +94,6 @@ def test_occlusion_config_validation():
 
     with pytest.raises(ValueError, match="velocity_range minimum"):
         build_augmenter("occlusion.moving_box", velocity_range=(3, -3))
+
+    with pytest.raises(ValueError, match="fill must be 'black'"):
+        build_augmenter("occlusion.sequence_box", fill="random_color")
