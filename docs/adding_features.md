@@ -1,61 +1,110 @@
-# Adding GPU Kernel Features
+# Adding Backend-Agnostic Features
 
-Each feature should be independently owned and live in its own module under
-`src/lmfao/features/`.
+LMFAO separates feature semantics from execution.
 
-## Contract
+```text
+features/  = what augmentation means
+backends/  = how that augmentation runs
+pipeline   = which features to apply and in what order
+registry   = central hub for feature discovery
+```
 
-A kernel feature:
+## Feature Contract
 
-- inherits from `lmfao.base.KernelFeature`
-- receives a GPU-resident video handle, not a NumPy array
-- launches one or more kernels through the provided `KernelRuntime`
-- does not copy frames to the CPU in the hot path
-- avoids Python per-frame or per-pixel loops
-- records launch parameters under `metadata["augmentation_params"]`
-- keeps allocations, synchronization, and stream ownership explicit
+A feature:
 
-## Template
+- inherits from `lmfao.base.AugmentationFeature`
+- lives under `src/lmfao/features/<family>/`
+- registers itself with `@register_feature(...)`
+- receives an opaque video handle owned by the runtime
+- calls `runtime.execute(...)` with an operation name and params
+- records sampled params under `metadata["augmentation_params"]`
+- does not import Torch, TorchVision, Pandas, CUDA, CuPy, or Triton directly
+- does not loop over frames or pixels in Python
+
+The feature should be small enough that someone can understand the augmentation
+contract without reading backend code.
+
+## Feature Template
 
 ```python
 from dataclasses import dataclass
 
-from lmfao.base import KernelFeature, KernelRuntime, Metadata, Video
-from lmfao.registry import register_kernel_feature
+from lmfao.base import AugmentationFeature, AugmentationRuntime, Metadata, Video
+from lmfao.registry import register_feature
 
 
-@register_kernel_feature(
-    "category.feature_name",
-    tags=("category", "gpu"),
-    description="Short human-readable description for the central hub.",
+@register_feature(
+    "occlusion.random_box",
+    tags=("occlusion", "image"),
+    backends=("torch_cpu", "torch_cuda", "cuda"),
+    description="Masks a rectangular region in each RGB observation frame.",
 )
 @dataclass
-class FeatureName(KernelFeature):
-    strength: float = 1.0
+class RandomBoxOcclusion(AugmentationFeature):
+    area: float = 0.2
+    fill_value: int = 0
 
-    def launch(self, video: Video, runtime: KernelRuntime, metadata: Metadata) -> Metadata:
-        runtime.launch_kernel(
-            kernel_name="category.feature_name",
-            grid=("TODO",),
-            block=("TODO",),
-            args=[video, self.strength],
-            stream=None,
-        )
-        metadata.setdefault("augmentation_params", {})[self.name] = {
-            "strength": self.strength,
+    def apply(
+        self,
+        video: Video,
+        runtime: AugmentationRuntime,
+        metadata: Metadata,
+    ) -> tuple[Video, Metadata]:
+        params = {
+            "area": self.area,
+            "fill_value": self.fill_value,
         }
-        return metadata
+        output = runtime.execute(
+            operation_name=self.name,
+            video=video,
+            params=params,
+            metadata=metadata,
+        )
+        metadata.setdefault("augmentation_params", {})[self.name] = params
+        return output, metadata
 ```
 
-Add the new class to `src/lmfao/features/__init__.py` so it registers at import
-time. Add focused tests that verify the expected kernel name, launch args,
-metadata, and deterministic feature selection when a seed is used.
+## Backend Contract
 
-The central registry lives in `src/lmfao/registry.py`. Feature owners should
-not edit its internals for normal feature work; they should use the
-`@register_kernel_feature(...)` decorator from their own module.
+A backend runtime:
 
-## Recommended Layout
+- exposes a stable `backend` name such as `torch_cpu`, `torch_cuda`, or `cuda`
+- implements `execute(operation_name, video, params, metadata, stream=None)`
+- owns dependency imports and data representation details
+- dispatches operation names to concrete implementations
+- returns the updated video handle
+
+CPU backends should use vectorized Torch/TorchVision/Pandas operations. GPU
+backends should keep video data on device and avoid host copies in the hot path.
+
+## Occlusion-Only Starting Point
+
+If occlusion is the only feature today, use this shape:
+
+```text
+src/lmfao/
+├── features/
+│   ├── __init__.py
+│   └── occlusion/
+│       ├── __init__.py
+│       └── random_box.py
+└── backends/
+    ├── __init__.py
+    ├── base.py
+    ├── torch_cpu.py
+    └── cuda/
+        ├── __init__.py
+        ├── runtime.py
+        └── kernels/
+            └── random_box.cu
+```
+
+`features/occlusion/random_box.py` defines the augmentation name, params, and
+metadata. `backends/torch_cpu.py` or `backends/cuda/runtime.py` performs the
+actual operation.
+
+## Full Planned Layout
 
 ```text
 src/lmfao/features/
@@ -63,59 +112,35 @@ src/lmfao/features/
 ├── lighting/
 │   ├── __init__.py
 │   ├── shadow.py
-│   ├── shadow.cu
 │   ├── rgb_shift.py
-│   └── rgb_shift.cu
+│   ├── brightness.py
+│   └── contrast.py
+├── noise/
+│   ├── __init__.py
+│   ├── gaussian.py
+│   ├── salt_pepper.py
+│   └── blur.py
 ├── occlusion/
 │   ├── __init__.py
 │   ├── random_box.py
-│   └── random_box.cu
-└── noise/
+│   ├── cutout.py
+│   └── mask.py
+├── temporal/
+│   ├── __init__.py
+│   ├── speed_up.py
+│   └── slow_down.py
+└── geometry/
     ├── __init__.py
-    ├── gaussian.py
-    └── gaussian.cu
+    ├── resize.py
+    ├── rotate.py
+    └── flip.py
 ```
 
-Use dotted feature names so the central hub remains flat but browsable:
+Use dotted names so the central hub stays flat but browsable:
 
 - `lighting.shadow`
 - `lighting.rgb_shift`
-- `occlusion.random_box`
 - `noise.gaussian`
-
-## Choosing Features
-
-The pipeline can be built from config:
-
-```python
-pipeline = KernelPipeline.from_config(
-    [
-        {
-            "name": "lighting.shadow",
-            "params": {"strength": 0.5},
-            "probability": 0.75,
-            "enabled": True,
-        }
-    ],
-    seed=42,
-)
-```
-
-The registry exposes the central hub:
-
-```python
-from lmfao import list_kernel_feature_info
-
-for feature in list_kernel_feature_info():
-    print(feature.name, feature.tags, feature.description)
-```
-
-## Lightweight Rules
-
-- Python should only choose features and launch kernels.
-- Keep video data on the GPU.
-- Reuse buffers and streams in the runtime.
-- Prefer fused kernels for multiple simple pixelwise operations when launch
-  overhead or memory bandwidth becomes the bottleneck.
-- Only run kernels concurrently when they write to independent buffers or
-  disjoint memory regions, or when the runtime explicitly resolves ordering.
+- `occlusion.random_box`
+- `temporal.speed_up`
+- `geometry.flip`

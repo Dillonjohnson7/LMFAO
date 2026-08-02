@@ -1,26 +1,29 @@
-from lmfao import KernelPipeline
+from lmfao import AugmentationPipeline
 
 
 class ExampleRuntime:
-    def upload_video(self, path):
-        return {"device_buffer": path}
+    backend = "example"
 
-    def launch_kernel(self, kernel_name, grid, block, args, stream=None):
-        print(kernel_name, grid, block, args, stream)
+    def load_video(self, path):
+        return {"video": path}
+
+    def execute(self, operation_name, video, params, metadata, stream=None):
+        print(operation_name, video, params, stream)
+        return video
 
 
 runtime = ExampleRuntime()
-video = runtime.upload_video("path/to/video.mp4")
+video = runtime.load_video("path/to/episode")
 
-pipeline = KernelPipeline.from_config(
+pipeline = AugmentationPipeline.from_config(
     [
-        # Add registered feature configs here, for example:
-        # {"name": "lighting.shadow", "params": {"strength": 0.5}, "probability": 0.75},
+        # Add registered feature configs here after implementing features.
+        # {"name": "occlusion.random_box", "params": {"area": 0.2}, "probability": 0.75},
     ],
     seed=42,
 )
 
-augmented_video, metadata = pipeline(video, runtime, metadata={"source": "demo"})
+augmented_video, metadata = pipeline(video, runtime, metadata={"episode_id": "demo-001"})
 
 print(augmented_video)
 print(metadata)

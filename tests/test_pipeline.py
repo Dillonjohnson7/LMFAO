@@ -1,63 +1,77 @@
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from lmfao import KernelFeature, KernelPipeline, list_kernel_feature_info, list_kernel_features
-from lmfao.base import KernelRuntime, Metadata, Video
-from lmfao.registry import register_kernel_feature
+from lmfao import AugmentationFeature, AugmentationPipeline, list_feature_info, list_features
+from lmfao.base import AugmentationRuntime, Metadata, Video
+from lmfao.registry import register_feature
 
 
-class RecordingRuntime(KernelRuntime):
+class RecordingRuntime(AugmentationRuntime):
+    backend = "torch_cpu"
+
     def __init__(self) -> None:
-        self.launches: list[dict[str, Any]] = []
+        self.calls: list[dict[str, Any]] = []
 
-    def launch_kernel(
+    def execute(
         self,
-        kernel_name: str,
-        grid: Any,
-        block: Any,
-        args: list[Any],
+        operation_name: str,
+        video: Video,
+        params: dict[str, Any],
+        metadata: Metadata,
         stream: Optional[Any] = None,
-    ) -> None:
-        self.launches.append(
+    ) -> Video:
+        self.calls.append(
             {
-                "kernel_name": kernel_name,
-                "grid": grid,
-                "block": block,
-                "args": args,
+                "operation_name": operation_name,
+                "video": video,
+                "params": params,
+                "metadata": dict(metadata),
                 "stream": stream,
             }
         )
+        return video
 
 
-@register_kernel_feature("test.passthrough", tags=("test",), description="A test-only kernel feature.")
+@register_feature(
+    "test.passthrough",
+    tags=("test",),
+    backends=("torch_cpu", "cuda"),
+    description="A test-only augmentation feature.",
+)
 @dataclass
-class DummyPassthrough(KernelFeature):
+class DummyPassthrough(AugmentationFeature):
     value: int = 1
 
-    def launch(self, video: Video, runtime: KernelRuntime, metadata: Metadata) -> Metadata:
-        runtime.launch_kernel(
-            kernel_name="test.passthrough",
-            grid=(1,),
-            block=(1,),
-            args=[video, self.value],
-            stream=None,
+    def apply(
+        self,
+        video: Video,
+        runtime: AugmentationRuntime,
+        metadata: Metadata,
+    ) -> tuple[Video, Metadata]:
+        params = {"value": self.value}
+        output = runtime.execute(
+            operation_name=self.name,
+            video=video,
+            params=params,
+            metadata=metadata,
         )
-        metadata.setdefault("augmentation_params", {})[self.name] = {"value": self.value}
-        return metadata
+        metadata.setdefault("augmentation_params", {})[self.name] = params
+        return output, metadata
 
 
-def test_no_builtin_kernel_features_are_registered_yet():
-    assert list_kernel_features() == ["test.passthrough"]
-    [info] = list_kernel_feature_info()
+def test_no_builtin_features_are_registered_yet():
+    assert list_features() == ["test.passthrough"]
+    [info] = list_feature_info()
     assert info.name == "test.passthrough"
     assert info.tags == ("test",)
-    assert info.description == "A test-only kernel feature."
+    assert info.backends == ("torch_cpu", "cuda")
+    assert info.description == "A test-only augmentation feature."
 
 
-def test_pipeline_launches_configured_kernel_feature():
+def test_pipeline_executes_configured_feature_on_runtime():
     video = object()
     runtime = RecordingRuntime()
-    pipeline = KernelPipeline.from_config(
+    pipeline = AugmentationPipeline.from_config(
         [
             {"name": "test.passthrough", "params": {"value": 7}},
         ],
@@ -67,12 +81,12 @@ def test_pipeline_launches_configured_kernel_feature():
     augmented, metadata = pipeline(video, runtime)
 
     assert augmented is video
-    assert runtime.launches == [
+    assert runtime.calls == [
         {
-            "kernel_name": "test.passthrough",
-            "grid": (1,),
-            "block": (1,),
-            "args": [video, 7],
+            "operation_name": "test.passthrough",
+            "video": video,
+            "params": {"value": 7},
+            "metadata": {},
             "stream": None,
         }
     ]
@@ -85,7 +99,7 @@ def test_pipeline_is_reproducible_with_seed():
     video = object()
     config = [{"name": "test.passthrough", "params": {}}]
 
-    pipeline = KernelPipeline.from_config(config, seed=123)
+    pipeline = AugmentationPipeline.from_config(config, seed=123)
     first_runtime = RecordingRuntime()
     second_runtime = RecordingRuntime()
     first, first_metadata = pipeline(video, first_runtime)
@@ -93,13 +107,13 @@ def test_pipeline_is_reproducible_with_seed():
 
     assert first is second
     assert first_metadata == second_metadata
-    assert first_runtime.launches == second_runtime.launches
+    assert first_runtime.calls == second_runtime.calls
 
 
 def test_pipeline_can_skip_feature_by_probability():
     video = object()
     runtime = RecordingRuntime()
-    pipeline = KernelPipeline.from_config(
+    pipeline = AugmentationPipeline.from_config(
         [{"name": "test.passthrough", "params": {}, "probability": 0.0}],
         seed=123,
     )
@@ -107,6 +121,21 @@ def test_pipeline_can_skip_feature_by_probability():
     augmented, metadata = pipeline(video, runtime)
 
     assert augmented is video
-    assert runtime.launches == []
+    assert runtime.calls == []
     assert metadata["augmentations"] == []
     assert metadata["skipped_augmentations"] == ["test.passthrough"]
+
+
+def test_feature_rejects_unsupported_backend():
+    class PandasRuntime(RecordingRuntime):
+        backend = "pandas_cpu"
+
+    video = object()
+    pipeline = AugmentationPipeline.from_config([{"name": "test.passthrough", "params": {}}])
+
+    try:
+        pipeline(video, PandasRuntime())
+    except ValueError as exc:
+        assert "does not support backend 'pandas_cpu'" in str(exc)
+    else:
+        raise AssertionError("expected unsupported backend error")

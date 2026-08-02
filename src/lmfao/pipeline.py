@@ -2,28 +2,28 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping, Optional, Sequence, Union
+from typing import Iterable, Mapping, Optional, Sequence, Union
 
-from lmfao.base import KernelFeature, KernelRuntime, Metadata, Video
-from lmfao.registry import build_kernel_feature
+from lmfao.base import AugmentationFeature, AugmentationRuntime, Metadata, Video
+from lmfao.registry import build_feature
 
 
 @dataclass(frozen=True)
-class KernelStep:
-    feature: KernelFeature
+class PipelineStep:
+    feature: AugmentationFeature
     probability: float = 1.0
 
 
-class KernelPipeline:
-    """Lightweight GPU kernel launch pipeline."""
+class AugmentationPipeline:
+    """Lightweight backend-agnostic augmentation pipeline."""
 
-    def __init__(self, steps: Sequence[Union[KernelFeature, KernelStep]], seed: Optional[int] = None) -> None:
-        self.steps = [step if isinstance(step, KernelStep) else KernelStep(step) for step in steps]
+    def __init__(self, steps: Sequence[Union[AugmentationFeature, PipelineStep]], seed: Optional[int] = None) -> None:
+        self.steps = [step if isinstance(step, PipelineStep) else PipelineStep(step) for step in steps]
         self.seed = seed
 
     @classmethod
-    def from_config(cls, configs: Iterable[dict[str, Any]], seed: Optional[int] = None) -> "KernelPipeline":
-        steps: list[KernelStep] = []
+    def from_config(cls, configs: Iterable[dict], seed: Optional[int] = None) -> "AugmentationPipeline":
+        steps: list[PipelineStep] = []
         for config in configs:
             item = dict(config)
             name = item.pop("name")
@@ -39,14 +39,14 @@ class KernelPipeline:
             if not enabled:
                 continue
 
-            steps.append(KernelStep(build_kernel_feature(name, **params), probability=probability))
+            steps.append(PipelineStep(build_feature(name, **params), probability=probability))
         return cls(steps, seed=seed)
 
     def __call__(
         self,
         video: Video,
-        runtime: KernelRuntime,
-        metadata: Optional[Mapping[str, Any]] = None,
+        runtime: AugmentationRuntime,
+        metadata: Optional[Mapping] = None,
     ) -> tuple[Video, Metadata]:
         rng = random.Random(self.seed)
         run_metadata: Metadata = dict(metadata or {})
@@ -59,7 +59,7 @@ class KernelPipeline:
                 skipped.append(feature.name)
                 continue
 
-            run_metadata = feature(video, runtime, run_metadata)
+            video, run_metadata = feature(video, runtime, run_metadata)
             applied.append(feature.name)
 
         run_metadata["augmentations"] = applied

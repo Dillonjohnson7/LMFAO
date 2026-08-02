@@ -2,87 +2,71 @@
 
 Lightweight Modular Feature-Based Augmentation Operation.
 
-LMFAO is a small central library for GPU-backed video data augmentation. Each
-feature lives in its own module, registers itself by name, and contributes a
-thin kernel launch wrapper that can be selected through a shared pipeline.
+LMFAO augments robot demonstration datasets for ACT-style policy training. It
+expands a dataset by applying image-only transforms to RGB observation frames
+while leaving actions and action chunks unchanged.
 
-## Install
+The library is backend-agnostic: feature modules define what augmentation should
+happen, while backend runtimes decide how to execute it on CPU or GPU.
 
-```bash
-pip install -e ".[dev]"
+## Dataset Contract
+
+LMFAO expects episodes shaped like:
+
+```text
+observations: O0 ... On
+actions:      a0 ... an
+chunks:       action chunks used by ACT-style policies
 ```
+
+Image augmentations touch only observation images. Robot state, actions, and
+action chunks are carried through unchanged unless a future sequence-level
+transform explicitly documents otherwise.
 
 ## Basic Usage
 
-Videos should stay GPU-resident. The core package treats the video as an opaque
-handle owned by your runtime, such as a CUDA buffer, PyTorch tensor, CuPy array,
-or custom device allocation.
-
-Example:
+Video data is an opaque handle owned by the selected runtime. That handle can be
+a Torch tensor, TorchVision video tensor, Pandas-backed batch record, CUDA
+buffer, CuPy array, Triton allocation, or another project-specific object.
 
 ```python
-from lmfao import KernelPipeline
+from lmfao import AugmentationPipeline
 
-video = runtime.upload_video(...)
+video = runtime.load_video(...)
 
-pipeline = KernelPipeline.from_config(
+pipeline = AugmentationPipeline.from_config(
     [
-        # Add registered feature configs here, for example:
-        # {"name": "lighting.shadow", "params": {"strength": 0.5}, "probability": 0.75},
+        {"name": "occlusion.random_box", "params": {"area": 0.2}, "probability": 0.75},
     ],
     seed=42,
 )
 
-augmented_video, metadata = pipeline(video, runtime, metadata={"source": "demo"})
+augmented_video, metadata = pipeline(video, runtime, metadata={"episode_id": "demo-001"})
 ```
 
-No feature implementations are included yet. Lighting changes, occlusions,
-noise, and other augmentations should be added as separate GPU kernel features.
+## Team Modules
 
-## Adding a Feature
+Initial feature ownership:
 
-Each person can add a feature in `src/lmfao/features/` without editing the
-pipeline.
+- Dillon: `features/lighting/` for lighting and color channel transforms
+- Andrew: `features/noise/` for noise injection
+- Ryan: `features/occlusion/` for occlusions
 
-```python
-from dataclasses import dataclass
+Planned later modules:
 
-from lmfao.base import KernelFeature, KernelRuntime, Metadata, Video
-from lmfao.registry import register_kernel_feature
+- `features/temporal/` for slowing and speeding sequences
+- `features/geometry/` for resolution changes, rotation, and flipping
 
-
-@register_kernel_feature(
-    "lighting.my_feature",
-    tags=("lighting", "gpu"),
-    description="Short description shown by the central feature hub.",
-)
-@dataclass
-class MyFeature(KernelFeature):
-    strength: float = 1.0
-
-    def launch(self, video: Video, runtime: KernelRuntime, metadata: Metadata):
-        runtime.launch_kernel(
-            kernel_name="lighting.my_feature",
-            grid=("TODO",),
-            block=("TODO",),
-            args=[video, self.strength],
-            stream=None,
-        )
-        metadata.setdefault("augmentation_params", {})[self.name] = {
-            "strength": self.strength,
-        }
-        return metadata
-```
-
-Then import it from `src/lmfao/features/__init__.py` so it is registered when
-the package loads.
-
-See `docs/adding_features.md` for the contributor contract and checklist.
+Temporal and geometry transforms need extra care because they may affect
+sequence alignment or camera geometry. Image-only transforms should preserve ACT
+labels by default.
 
 ## Development
 
-Run tests:
-
 ```bash
+pip install -e ".[dev]"
 pytest
 ```
+
+See `docs/architecture.md` and `docs/adding_features.md` before implementing a
+feature or backend.
