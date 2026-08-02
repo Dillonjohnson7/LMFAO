@@ -50,8 +50,6 @@ The central registry lives in `src/lmfao/registry.py`. Feature owners should
 not edit its internals for normal feature work; they should use the
 `@register_augmenter(...)` decorator from their own module.
 
-Use `docs/feature_template.py` as a copy/paste starting point.
-
 ## Choosing Features
 
 The pipeline can be built from config:
