@@ -9,6 +9,9 @@ import { extractFrames } from "@/lib/video";
 type Status = "idle" | "decoding" | "augmenting" | "ready" | "error";
 
 const DEMO_SRC = "/demo.mp4";
+const FRAMES_DEFAULT = 28;
+const FRAMES_MIN = 4;
+const FRAMES_MAX = 64;
 
 export default function Page() {
   const [status, setStatus] = useState<Status>("idle");
@@ -20,25 +23,30 @@ export default function Page() {
   const [fileName, setFileName] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [exporting, setExporting] = useState<{ done: number; total: number } | null>(null);
+  const [frameCount, setFrameCount] = useState(FRAMES_DEFAULT);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  // Read latest frame count inside run() without re-creating the callback.
+  const frameCountRef = useRef(FRAMES_DEFAULT);
+  const lastSourceRef = useRef<{ source: File | string; name: string } | null>(null);
 
   const frameDurationMs = useMemo(() => 1000 / 8, []); // ~8 fps playback
 
   const run = useCallback(async (source: File | string, name: string) => {
+    lastSourceRef.current = { source, name };
     setError(null);
     setStatus("decoding");
     setTiles([]);
     setSelected(new Set());
     setFileName(name);
     try {
-      const clip = await extractFrames(source, { maxFrames: 28, maxWidth: 320 });
+      const clip = await extractFrames(source, { maxFrames: frameCountRef.current, maxWidth: 320 });
       if (clip.frames.length === 0) throw new Error("No frames could be decoded from this file.");
       setMeta({ w: clip.width, h: clip.height, frames: clip.frames.length, fps: clip.fps });
       setStatus("augmenting");
       setProgress({ done: 0, total: 0 });
       const built = await buildTiles(clip.frames, (done, total) => setProgress({ done, total }));
       setTiles(built);
-      // Start with everything selected — curate down to the ones you like.
+      // Start with everything selected, then curate down to the ones you like.
       setSelected(new Set(built.map((t) => t.spec.id)));
       setStartTime(performance.now());
       setStatus("ready");
@@ -71,6 +79,17 @@ export default function Page() {
 
   const selectAll = useCallback(() => setSelected(new Set(tiles.map((t) => t.spec.id))), [tiles]);
   const clearAll = useCallback(() => setSelected(new Set()), []);
+
+  const onFramesChange = useCallback((raw: number) => {
+    const clamped = Math.max(FRAMES_MIN, Math.min(FRAMES_MAX, Math.round(raw || FRAMES_MIN)));
+    setFrameCount(clamped);
+    frameCountRef.current = clamped;
+  }, []);
+
+  const regenerate = useCallback(() => {
+    const s = lastSourceRef.current;
+    if (s) run(s.source, s.name);
+  }, [run]);
 
   const onExport = useCallback(async () => {
     if (!meta) return;
@@ -110,8 +129,8 @@ export default function Page() {
         <h1>One clip in, a whole augmented fleet out.</h1>
         <p className="lede">
           Upload a single robot-demonstration clip. It fans out into a grid of variants,
-          each running exactly <strong>one</strong> augmentation from the library — lighting,
-          noise, spatial, and occlusion — all playing at once, computed live in your browser.
+          each running exactly <strong>one</strong> augmentation from the library (lighting,
+          noise, spatial, and occlusion), all playing at once, computed live in your browser.
           Then curate the ones you like and download them as a new dataset.
         </p>
 
@@ -122,6 +141,27 @@ export default function Page() {
           <button className="btn ghost" onClick={() => run(DEMO_SRC, "demo.mp4")} disabled={busy}>
             Try the demo clip
           </button>
+
+          <div className="field" title={`Frames extracted per clip (${FRAMES_MIN} to ${FRAMES_MAX})`}>
+            <label htmlFor="frames">Frames / clip</label>
+            <input
+              id="frames"
+              type="number"
+              min={FRAMES_MIN}
+              max={FRAMES_MAX}
+              step={1}
+              value={frameCount}
+              disabled={busy}
+              onChange={(e) => onFramesChange(Number(e.target.value))}
+            />
+          </div>
+
+          {fileName && status === "ready" && (
+            <button className="btn ghost" onClick={regenerate} disabled={busy}>
+              ↻ Regenerate at {frameCount}
+            </button>
+          )}
+
           <input
             ref={inputRef}
             type="file"
@@ -201,21 +241,21 @@ export default function Page() {
               or upload your own <code>.mp4</code> / <code>.webm</code>.
             </p>
             <ul>
-              <li><span className="swatch lighting" /> lighting — brightness, contrast, color temperature</li>
-              <li><span className="swatch noise" /> noise — gaussian, uniform</li>
-              <li><span className="swatch spatial" /> spatial — per-frame random crop jitter</li>
-              <li><span className="swatch occlusion" /> occlusion — sequence box, border intrusion, moving box</li>
+              <li><span className="swatch lighting" /> lighting: brightness, contrast, color temperature</li>
+              <li><span className="swatch noise" /> noise: gaussian, uniform</li>
+              <li><span className="swatch spatial" /> spatial: per-frame random crop jitter</li>
+              <li><span className="swatch occlusion" /> occlusion: sequence box, border intrusion, moving box</li>
             </ul>
             <p className="empty-note">
               Tap variants to select/deselect (they all start selected), then download the ones
-              you like as a single <code>.zip</code> dataset — PNG frames plus an lmfao-ready config.
+              you like as a single <code>.zip</code> dataset: PNG frames plus an lmfao-ready config.
             </p>
           </div>
         </section>
       )}
 
       <footer className="foot">
-        Everything runs client-side — your video never leaves the browser. Augmentations mirror
+        Everything runs client-side, so your video never leaves the browser. Augmentations mirror
         the <code>lmfao</code> library&apos;s pixel math.
       </footer>
     </main>

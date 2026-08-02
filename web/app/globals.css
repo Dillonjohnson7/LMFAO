@@ -129,6 +129,39 @@ code {
   border-color: var(--accent-2);
 }
 
+.field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 12px;
+}
+.field label {
+  font-size: 13px;
+  color: var(--muted);
+  font-weight: 600;
+}
+.field input[type="number"] {
+  width: 58px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 14px;
+  padding: 6px 8px;
+  text-align: center;
+}
+.field input[type="number"]:focus {
+  outline: none;
+  border-color: var(--accent-2);
+}
+.field input:disabled {
+  opacity: 0.5;
+}
+
 .status-line {
   display: flex;
   align-items: center;

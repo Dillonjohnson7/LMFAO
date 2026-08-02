@@ -4,7 +4,7 @@
 // Uint8ClampedArray backing store clamps to [0,255] and rounds for us, which
 // matches the library's preserve_dtype clip+cast for uint8.
 //
-// Every tile in the grid runs exactly ONE augmentation — augmentations are
+// Every tile in the grid runs exactly ONE augmentation; augmentations are
 // never composed, matching the demo requirement.
 
 import { choice, mulberry32, randint, uniform } from "./rng";
@@ -397,7 +397,7 @@ export const AUGMENTATIONS: AugSpec[] = [
   {
     id: "original",
     label: "Original",
-    registered: "—",
+    registered: "none",
     family: "original",
     blurb: "The uploaded clip, untouched.",
     params: {},
