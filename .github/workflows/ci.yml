@@ -20,8 +20,11 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
       - name: Install package
-        run: python -m pip install -e ".[dev]"
+        run: uv pip install --system -e ".[dev]"
 
       - name: Check for conflict markers
         run: |
@@ -30,7 +33,7 @@ jobs:
           fi
 
       - name: Byte-compile source
-        run: python -m compileall -q src
+        run: uv run python -m compileall -q src
 
       - name: Run tests
-        run: python -m pytest
+        run: uv run pytest
