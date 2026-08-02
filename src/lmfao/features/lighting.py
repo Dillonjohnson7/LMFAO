@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 import numpy as np
 
@@ -31,7 +30,7 @@ class ColorTemperatureShift(Augmenter):
     ``[min_shift, max_shift]`` on every call using the pipeline's rng.
     """
 
-    shift: Optional[float] = None
+    shift: float | None = None
     min_shift: float = -1.0
     max_shift: float = 1.0
     intensity: float = 0.35
@@ -88,7 +87,7 @@ class BrightnessScale(Augmenter):
     pipeline's rng.
     """
 
-    factor: Optional[float] = None
+    factor: float | None = None
     min_factor: float = 0.6
     max_factor: float = 1.4
 
@@ -130,7 +129,7 @@ class ContrastScale(Augmenter):
     ``[min_factor, max_factor]`` on every call using the pipeline's rng.
     """
 
-    factor: Optional[float] = None
+    factor: float | None = None
     min_factor: float = 0.6
     max_factor: float = 1.6
 
