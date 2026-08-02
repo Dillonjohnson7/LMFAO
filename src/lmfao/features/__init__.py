@@ -7,6 +7,7 @@ When adding a new feature:
 3. Import the class here so it is registered when `lmfao` is imported.
 """
 
+from lmfao.features.lighting import BrightnessScale, ColorTemperatureShift, ContrastScale
 from lmfao.features.spatial import RandomCrop
 
-__all__: list[str] = ["RandomCrop"]
+__all__: list[str] = ["BrightnessScale", "ColorTemperatureShift", "ContrastScale", "RandomCrop"]
