@@ -2,30 +2,31 @@
 
 Lightweight Modular Feature-Based Augmentation Operation.
 
-LMFAO expands robot imitation-learning datasets by augmenting recorded
-demonstration videos. You capture a limited set of real demonstrations (for
-example a SO-101 arm doing a pick-and-place task, stored as a LeRobot dataset),
-and LMFAO applies composable, reproducible augmentations to those clips so a
-trained policy sees far more visual variety than you physically recorded. The
-goal is more robust policies without more hours on the robot.
+Collecting robot demonstrations is the expensive part. Teleoperating an arm
+through hundreds of pick-and-place episodes is slow and tedious, and a policy
+trained on those clips tends to latch onto the exact lighting, background, and
+camera framing it happened to see. Change the room's lighting, let the afternoon
+sun move, or nudge the camera a few centimeters, and the policy that looked
+great in the lab falls apart.
 
-Each augmentation is a self-contained module that registers itself by name
-(lighting, occlusion, spatial crops, sensor noise, and so on). You compose them
-into a pipeline from a plain config, with a per-step probability and a seed so
-every run is reproducible.
+LMFAO gets more out of the demonstrations you already recorded. It turns each
+clip into many varied training examples (relit, partially occluded, re-cropped,
+and so on), so your policy learns the task instead of memorizing the scene. You
+get a more robust policy without more hours on the robot, a second camera rig, or
+a GPU: the augmentations are cheap, run on CPU, and work on the data you already
+have.
 
-## What it does
+## Why it helps
 
-- Reads demonstration clips as NumPy arrays of shape
-  `(frames, height, width, channels)`, the same layout a LeRobot dataset decodes
-  to.
-- Runs a configurable chain of augmentations. Each step fires with its own
-  probability, so every pass produces a different but reproducible variant of the
-  clip.
-- Preserves shape and dtype, so an augmented clip drops straight back into a
-  training set.
-- Records which augmentations ran, and with what sampled parameters, in a
-  metadata dict, so every synthetic frame stays auditable.
+- **More data from the same demos.** One recorded episode becomes many training
+  clips, so you spend less time teleoperating and more time training.
+- **Policies that survive the real world.** Randomized lighting, occlusion, and
+  framing stop a policy from overfitting to the one scene it was recorded in.
+- **Cheap and reproducible.** Pure NumPy on CPU, seeded end to end. Shape and
+  dtype are preserved and every applied augmentation is recorded in metadata, so
+  augmented clips drop straight back into training and stay auditable.
+- **Modular by design.** Every effect is an independent plug-in. Add or swap one
+  without touching the pipeline or anyone else's feature.
 
 ## Install
 
@@ -35,8 +36,9 @@ pip install -e ".[dev]"
 
 ## Basic usage
 
-A clip is a NumPy array of shape `(frames, height, width, channels)`. In practice
-it comes from a recorded dataset; here we fake one.
+A clip is a NumPy array of shape `(frames, height, width, channels)`, the same
+layout a LeRobot dataset decodes to. In practice it comes from a recorded
+dataset; here we fake one.
 
 ```python
 import numpy as np
@@ -49,6 +51,8 @@ pipeline = AugmentationPipeline.from_config(
     [
         {"name": "lighting.brightness", "params": {"min_factor": 0.7, "max_factor": 1.3}, "probability": 0.75},
         {"name": "lighting.color_temperature", "params": {"intensity": 0.35}, "probability": 0.5},
+        {"name": "occlusion.moving_box", "probability": 0.5},
+        {"name": "spatial.random_crop", "probability": 1.0},
     ],
     seed=42,
 )
@@ -59,9 +63,21 @@ print(metadata["augmentations"])        # which steps actually ran this pass
 print(metadata["augmentation_params"])  # the parameters they sampled
 ```
 
+Change the `seed` and each pass gives you a fresh variant of the same clip; keep
+it fixed and the run is byte-for-byte repeatable.
+
 ## Available augmentations
 
-List everything currently registered:
+Shipping today:
+
+- **lighting:** `lighting.brightness`, `lighting.contrast`,
+  `lighting.color_temperature`
+- **occlusion:** `occlusion.sequence_box`, `occlusion.border_intrusion`,
+  `occlusion.moving_box`
+- **spatial:** `spatial.random_crop`
+
+Sensor noise and further effects are on the way. To list exactly what is
+registered in your install:
 
 ```python
 from lmfao import list_augmenter_info
@@ -69,10 +85,6 @@ from lmfao import list_augmenter_info
 for feature in list_augmenter_info():
     print(feature.name, feature.tags, feature.description)
 ```
-
-The lighting family (`lighting.brightness`, `lighting.contrast`,
-`lighting.color_temperature`) ships today. Occlusion, spatial crops, and noise
-are landing as separate feature modules.
 
 ## Adding a feature
 
