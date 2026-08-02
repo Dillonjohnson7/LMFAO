@@ -1,9 +1,8 @@
 "use client";
 
-import { type CSSProperties, useEffect, useRef } from "react";
+import { type CSSProperties, useEffect, useRef, useState } from "react";
 import { FAMILY_COLORS } from "@/lib/augmentations";
 import type { TileData } from "@/lib/pipeline";
-import { useFramePlayer } from "@/lib/useFramePlayer";
 
 export interface ViewerProps {
   tiles: TileData[];
@@ -21,7 +20,6 @@ export default function Viewer({
   tiles,
   index,
   frameDurationMs,
-  startTime,
   playbackLabel,
   isSelected,
   onToggle,
@@ -29,22 +27,69 @@ export default function Viewer({
   onClose,
 }: ViewerProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const frameNumRef = useRef<HTMLSpanElement | null>(null);
+  const clockRef = useRef(0); // local playback clock origin
+  const [playing, setPlaying] = useState(true);
+  const [frame, setFrame] = useState(0);
 
   const tile = tiles[index];
   const total = tiles.length;
+  const nFrames = tile?.frames.length ?? 0;
+
   const prev = () => onNavigate((index - 1 + total) % total);
   const next = () => onNavigate((index + 1) % total);
 
-  useFramePlayer(canvasRef, tile?.frames ?? [], frameDurationMs, startTime, (idx) => {
-    if (frameNumRef.current) frameNumRef.current.textContent = String(idx).padStart(2, "0");
-  });
+  // Auto-play loop (runs only while `playing`).
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const frames = tile?.frames ?? [];
+    if (!canvas || frames.length === 0) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    canvas.width = frames[0].width;
+    canvas.height = frames[0].height;
+    if (!playing) return;
 
+    clockRef.current = performance.now() - frame * frameDurationMs;
+    let raf = 0;
+    let last = -1;
+    const tick = () => {
+      const idx = Math.floor((performance.now() - clockRef.current) / frameDurationMs) % frames.length;
+      if (idx !== last) {
+        ctx.drawImage(frames[idx], 0, 0);
+        setFrame(idx);
+        last = idx;
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+    // `frame` is intentionally excluded: it changes every tick and would restart the loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tile, frameDurationMs, playing]);
+
+  // Paused / scrubbed draw: show exactly the selected frame.
+  useEffect(() => {
+    if (playing) return;
+    const canvas = canvasRef.current;
+    const frames = tile?.frames ?? [];
+    if (!canvas || frames.length === 0) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    canvas.width = frames[0].width;
+    canvas.height = frames[0].height;
+    ctx.drawImage(frames[Math.min(frame, frames.length - 1)], 0, 0);
+  }, [frame, playing, tile]);
+
+  // Keyboard: Esc close, arrows navigate, space play/pause.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
-      else if (e.key === "ArrowLeft") onNavigate((index - 1 + total) % total);
-      else if (e.key === "ArrowRight") onNavigate((index + 1) % total);
+      else if (e.key === "ArrowLeft") prev();
+      else if (e.key === "ArrowRight") next();
+      else if (e.key === " ") {
+        e.preventDefault();
+        setPlaying((p) => !p);
+      }
     };
     window.addEventListener("keydown", onKey);
     const prevOverflow = document.body.style.overflow;
@@ -53,7 +98,8 @@ export default function Viewer({
       window.removeEventListener("keydown", onKey);
       document.body.style.overflow = prevOverflow;
     };
-  }, [index, total, onNavigate, onClose]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [index, total]);
 
   if (!tile) return null;
   const color = FAMILY_COLORS[tile.spec.family];
@@ -68,13 +114,35 @@ export default function Viewer({
           </button>
           <div className="viewer-canvas-wrap">
             <canvas ref={canvasRef} />
-            <span className="viewer-frame">
-              frame <span ref={frameNumRef}>00</span>
-            </span>
           </div>
           <button className="viewer-nav next" aria-label="Next" onClick={next}>
             ›
           </button>
+
+          <div className="viewer-scrub">
+            <button
+              className="viewer-play"
+              aria-label={playing ? "Pause" : "Play"}
+              onClick={() => setPlaying((p) => !p)}
+            >
+              {playing ? "❚❚" : "▶"}
+            </button>
+            <input
+              className="viewer-range"
+              type="range"
+              min={0}
+              max={Math.max(0, nFrames - 1)}
+              value={frame}
+              onChange={(e) => {
+                setPlaying(false);
+                setFrame(Number(e.target.value));
+              }}
+              aria-label="Scrub frames"
+            />
+            <span className="viewer-scrubcount">
+              {String(frame).padStart(2, "0")} / {nFrames - 1}
+            </span>
+          </div>
         </div>
 
         <aside className="viewer-meta">
