@@ -26,7 +26,7 @@ from lmfao.registry import register_augmenter
 class SequenceBoxOcclusion(Augmenter):
     box_area_range: tuple[float, float] = (0.02, 0.20)
     aspect_ratio_range: tuple[float, float] = (0.5, 2.0)
-    fill: FillMode = "mean"
+    fill: FillMode = "black"
 
     def __post_init__(self) -> None:
         self.box_area_range = validate_fraction_range(self.box_area_range, "box_area_range")
@@ -41,7 +41,7 @@ class SequenceBoxOcclusion(Augmenter):
         left = box["left"]
         bottom = top + box["height"]
         right = left + box["width"]
-        fill_region(augmented[:, top:bottom, left:right, :], self.fill, rng)
+        fill_region(augmented[:, top:bottom, left:right, :], self.fill)
 
         params = {
             "box_area_range": self.box_area_range,
