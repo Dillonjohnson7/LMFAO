@@ -1,263 +1,156 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
-import Tile from "@/components/Tile";
-import { buildTiles, type TileData } from "@/lib/pipeline";
-import { downloadBlob, exportDataset } from "@/lib/exporter";
-import { extractFrames } from "@/lib/video";
-
-type Status = "idle" | "decoding" | "augmenting" | "ready" | "error";
-
-const DEMO_SRC = "/demo.mp4";
-const FRAMES_DEFAULT = 28;
-const FRAMES_MIN = 4;
-const FRAMES_MAX = 64;
+import Link from "next/link";
+import { useRef } from "react";
+import TileClean from "@/components/TileClean";
+import { FRAMES_MAX, FRAMES_MIN, useStudio } from "@/lib/useStudio";
 
 export default function Page() {
-  const [status, setStatus] = useState<Status>("idle");
-  const [tiles, setTiles] = useState<TileData[]>([]);
-  const [progress, setProgress] = useState({ done: 0, total: 0 });
-  const [error, setError] = useState<string | null>(null);
-  const [meta, setMeta] = useState<{ w: number; h: number; frames: number; fps: number } | null>(null);
-  const [startTime, setStartTime] = useState(0);
-  const [fileName, setFileName] = useState<string | null>(null);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [exporting, setExporting] = useState<{ done: number; total: number } | null>(null);
-  const [frameCount, setFrameCount] = useState(FRAMES_DEFAULT);
+  const s = useStudio();
   const inputRef = useRef<HTMLInputElement | null>(null);
-  // Read latest frame count inside run() without re-creating the callback.
-  const frameCountRef = useRef(FRAMES_DEFAULT);
-  const lastSourceRef = useRef<{ source: File | string; name: string } | null>(null);
 
-  const frameDurationMs = useMemo(() => 1000 / 8, []); // ~8 fps playback
-
-  const run = useCallback(async (source: File | string, name: string) => {
-    lastSourceRef.current = { source, name };
-    setError(null);
-    setStatus("decoding");
-    setTiles([]);
-    setSelected(new Set());
-    setFileName(name);
-    try {
-      const clip = await extractFrames(source, { maxFrames: frameCountRef.current, maxWidth: 320 });
-      if (clip.frames.length === 0) throw new Error("No frames could be decoded from this file.");
-      setMeta({ w: clip.width, h: clip.height, frames: clip.frames.length, fps: clip.fps });
-      setStatus("augmenting");
-      setProgress({ done: 0, total: 0 });
-      const built = await buildTiles(clip.frames, (done, total) => setProgress({ done, total }));
-      setTiles(built);
-      // Start with everything selected, then curate down to the ones you like.
-      setSelected(new Set(built.map((t) => t.spec.id)));
-      setStartTime(performance.now());
-      setStatus("ready");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setStatus("error");
-    }
-  }, []);
-
-  const onFile = useCallback(
-    (file: File | undefined) => {
-      if (!file) return;
-      if (!file.type.startsWith("video/")) {
-        setError("Please choose a video file.");
-        setStatus("error");
-        return;
-      }
-      run(file, file.name);
-    },
-    [run]
-  );
-
-  const toggle = useCallback((id: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
-  }, []);
-
-  const selectAll = useCallback(() => setSelected(new Set(tiles.map((t) => t.spec.id))), [tiles]);
-  const clearAll = useCallback(() => setSelected(new Set()), []);
-
-  const onFramesChange = useCallback((raw: number) => {
-    const clamped = Math.max(FRAMES_MIN, Math.min(FRAMES_MAX, Math.round(raw || FRAMES_MIN)));
-    setFrameCount(clamped);
-    frameCountRef.current = clamped;
-  }, []);
-
-  const regenerate = useCallback(() => {
-    const s = lastSourceRef.current;
-    if (s) run(s.source, s.name);
-  }, [run]);
-
-  const onExport = useCallback(async () => {
-    if (!meta) return;
-    const chosen = tiles.filter((t) => selected.has(t.spec.id));
-    if (chosen.length === 0) return;
-    setExporting({ done: 0, total: 0 });
-    try {
-      const blob = await exportDataset(
-        chosen,
-        {
-          source: fileName ?? "clip",
-          width: meta.w,
-          height: meta.h,
-          frameCount: meta.frames,
-          fps: meta.fps,
-        },
-        (done, total) => setExporting({ done, total })
-      );
-      const stem = (fileName ?? "clip").replace(/\.[^.]+$/, "");
-      downloadBlob(blob, `${stem}-lmfao-dataset.zip`);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setExporting(null);
-    }
-  }, [tiles, selected, meta, fileName]);
-
-  const busy = status === "decoding" || status === "augmenting";
+  const selectedCount = s.selected.size;
+  const exportPct =
+    s.exporting && s.exporting.total ? Math.round((s.exporting.done / s.exporting.total) * 100) : 0;
 
   return (
-    <main className="page">
-      <header className="hero">
-        <div className="brand">
-          <span className="logo">LMFAO</span>
-          <span className="tag">augmentation demo</span>
+    <div className="clean">
+      <header className="clean-masthead">
+        <div className="clean-wordmark">
+          lmfao<span>/augment</span>
         </div>
-        <h1>One clip in, a whole augmented fleet out.</h1>
-        <p className="lede">
-          Upload a single robot-demonstration clip. It fans out into a grid of variants,
-          each running exactly <strong>one</strong> augmentation from the library (lighting,
-          noise, spatial, and occlusion), all playing at once, computed live in your browser.
-          Then curate the ones you like and download them as a new dataset.
-        </p>
+        <Link href="/slop" className="clean-altlink">
+          slop version
+        </Link>
+      </header>
 
-        <div className="controls">
-          <button className="btn primary" onClick={() => inputRef.current?.click()} disabled={busy}>
-            {busy ? "Working…" : "Upload a video"}
-          </button>
-          <button className="btn ghost" onClick={() => run(DEMO_SRC, "demo.mp4")} disabled={busy}>
-            Try the demo clip
-          </button>
+      <main className="clean-main">
+        <section className="clean-intro">
+          <p className="clean-kicker">Data augmentation, watched not guessed</p>
+          <h1 className="clean-title">
+            See every augmentation on your footage before you commit it to a training run.
+          </h1>
+          <p className="clean-standfirst">
+            Load one demonstration clip. It is decoded in your browser and run through each
+            augmenter in the library, one per panel, so you can judge the effect frame by frame.
+            Keep the panels that look right and export them as a dataset.
+          </p>
 
-          <div className="field" title={`Frames extracted per clip (${FRAMES_MIN} to ${FRAMES_MAX})`}>
-            <label htmlFor="frames">Frames / clip</label>
+          <div className="clean-actions">
+            <button className="clean-btn solid" onClick={() => inputRef.current?.click()} disabled={s.busy}>
+              {s.busy ? "Working" : "Choose a video"}
+            </button>
+            <button className="clean-btn" onClick={s.runDemo} disabled={s.busy}>
+              Use the sample clip
+            </button>
+            <label className="clean-frames">
+              Frames per clip
+              <input
+                type="number"
+                min={FRAMES_MIN}
+                max={FRAMES_MAX}
+                step={1}
+                value={s.frameCount}
+                disabled={s.busy}
+                onChange={(e) => s.onFramesChange(Number(e.target.value))}
+              />
+            </label>
+            {s.fileName && s.status === "ready" && (
+              <button className="clean-btn quiet" onClick={s.regenerate} disabled={s.busy}>
+                Regenerate at {s.frameCount}
+              </button>
+            )}
             <input
-              id="frames"
-              type="number"
-              min={FRAMES_MIN}
-              max={FRAMES_MAX}
-              step={1}
-              value={frameCount}
-              disabled={busy}
-              onChange={(e) => onFramesChange(Number(e.target.value))}
+              ref={inputRef}
+              type="file"
+              accept="video/*"
+              hidden
+              onChange={(e) => s.onFile(e.target.files?.[0])}
             />
           </div>
 
-          {fileName && status === "ready" && (
-            <button className="btn ghost" onClick={regenerate} disabled={busy}>
-              ↻ Regenerate at {frameCount}
-            </button>
+          {s.fileName && s.status !== "error" && (
+            <p className="clean-status">
+              {s.status === "decoding" && `Decoding ${s.fileName}`}
+              {s.status === "augmenting" && `Rendering augmentations ${s.progress.done} of ${s.progress.total}`}
+              {s.status === "ready" &&
+                s.meta &&
+                `${s.tiles.length} panels, ${s.meta.frames} frames each, ${s.meta.w}×${s.meta.h}px, from ${s.fileName}`}
+            </p>
           )}
-
-          <input
-            ref={inputRef}
-            type="file"
-            accept="video/*"
-            hidden
-            onChange={(e) => onFile(e.target.files?.[0])}
-          />
-        </div>
-
-        {fileName && status !== "error" && (
-          <div className="status-line">
-            <span className="dot" data-status={status} />
-            {status === "decoding" && `Decoding frames from ${fileName}…`}
-            {status === "augmenting" && `Applying augmentations… ${progress.done}/${progress.total}`}
-            {status === "ready" &&
-              meta &&
-              `${tiles.length} variants · ${meta.frames} frames · ${meta.w}×${meta.h}px · ${fileName}`}
-          </div>
-        )}
-
-        {error && (
-          <div className="status-line error">
-            <span className="dot" data-status="error" /> {error}
-          </div>
-        )}
-      </header>
-
-      {status === "ready" && (
-        <>
-          <div className="toolbar">
-            <div className="toolbar-count">
-              <strong>{selected.size}</strong> of {tiles.length} selected
-            </div>
-            <div className="toolbar-actions">
-              <button className="btn tiny ghost" onClick={selectAll} disabled={!!exporting}>
-                Select all
-              </button>
-              <button className="btn tiny ghost" onClick={clearAll} disabled={!!exporting}>
-                Clear
-              </button>
-              <button
-                className="btn tiny primary"
-                onClick={onExport}
-                disabled={selected.size === 0 || !!exporting}
-              >
-                {exporting
-                  ? `Exporting… ${exporting.total ? Math.round((exporting.done / exporting.total) * 100) : 0}%`
-                  : `⬇ Download dataset (${selected.size})`}
-              </button>
-            </div>
-          </div>
-
-          <section className="grid" aria-label="Augmented variants">
-            {tiles.map((t) => (
-              <Tile
-                key={t.spec.id}
-                label={t.spec.label}
-                registered={t.spec.registered}
-                blurb={t.spec.blurb}
-                family={t.spec.family}
-                frames={t.frames}
-                frameDurationMs={frameDurationMs}
-                startTime={startTime}
-                selected={selected.has(t.spec.id)}
-                onToggle={() => toggle(t.spec.id)}
-              />
-            ))}
-          </section>
-        </>
-      )}
-
-      {status === "idle" && (
-        <section className="empty">
-          <div className="empty-card">
-            <p>
-              Nothing loaded yet. Hit <strong>Try the demo clip</strong> to see the fan-out,
-              or upload your own <code>.mp4</code> / <code>.webm</code>.
-            </p>
-            <ul>
-              <li><span className="swatch lighting" /> lighting: brightness, contrast, color temperature</li>
-              <li><span className="swatch noise" /> noise: gaussian, uniform</li>
-              <li><span className="swatch spatial" /> spatial: per-frame random crop jitter</li>
-              <li><span className="swatch occlusion" /> occlusion: sequence box, border intrusion, moving box</li>
-            </ul>
-            <p className="empty-note">
-              Tap variants to select/deselect (they all start selected), then download the ones
-              you like as a single <code>.zip</code> dataset: PNG frames plus an lmfao-ready config.
-            </p>
-          </div>
+          {s.error && <p className="clean-status err">{s.error}</p>}
         </section>
-      )}
 
-      <footer className="foot">
-        Everything runs client-side, so your video never leaves the browser. Augmentations mirror
-        the <code>lmfao</code> library&apos;s pixel math.
+        {s.status === "ready" && (
+          <>
+            <div className="clean-bar">
+              <div className="clean-bar-count">
+                {selectedCount} of {s.tiles.length} kept
+              </div>
+              <div className="clean-bar-actions">
+                <button className="clean-textbtn" onClick={s.selectAll} disabled={!!s.exporting}>
+                  Keep all
+                </button>
+                <span className="clean-sep" aria-hidden="true" />
+                <button className="clean-textbtn" onClick={s.clearAll} disabled={!!s.exporting}>
+                  Keep none
+                </button>
+                <button
+                  className="clean-btn solid sm"
+                  onClick={s.onExport}
+                  disabled={selectedCount === 0 || !!s.exporting}
+                >
+                  {s.exporting ? `Exporting ${exportPct}%` : `Export dataset (${selectedCount})`}
+                </button>
+              </div>
+            </div>
+
+            <section className="clean-grid" aria-label="Augmented panels">
+              {s.tiles.map((t, i) => (
+                <TileClean
+                  key={t.spec.id}
+                  index={i}
+                  label={t.spec.label}
+                  registered={t.spec.registered}
+                  blurb={t.spec.blurb}
+                  family={t.spec.family}
+                  frames={t.frames}
+                  frameDurationMs={s.frameDurationMs}
+                  startTime={s.startTime}
+                  selected={s.selected.has(t.spec.id)}
+                  onToggle={() => s.toggle(t.spec.id)}
+                />
+              ))}
+            </section>
+          </>
+        )}
+
+        {s.status === "idle" && (
+          <section className="clean-empty">
+            <div className="clean-empty-row">
+              <div className="clean-empty-k">Lighting</div>
+              <div className="clean-empty-v">Brightness, contrast, colour temperature.</div>
+            </div>
+            <div className="clean-empty-row">
+              <div className="clean-empty-k">Noise</div>
+              <div className="clean-empty-v">Gaussian grain and uniform, resampled every frame.</div>
+            </div>
+            <div className="clean-empty-row">
+              <div className="clean-empty-k">Spatial</div>
+              <div className="clean-empty-v">Per-frame random crop jitter.</div>
+            </div>
+            <div className="clean-empty-row">
+              <div className="clean-empty-k">Occlusion</div>
+              <div className="clean-empty-v">Sequence box, border intrusion, moving box.</div>
+            </div>
+          </section>
+        )}
+      </main>
+
+      <footer className="clean-foot">
+        <span>Runs entirely in the browser. The clip is never uploaded.</span>
+        <span>Panels match the pixel behaviour of the lmfao library.</span>
       </footer>
-    </main>
+    </div>
   );
 }

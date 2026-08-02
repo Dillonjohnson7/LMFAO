@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useRef } from "react";
 import { FAMILY_COLORS, type Family } from "@/lib/augmentations";
+import { useFramePlayer } from "@/lib/useFramePlayer";
 
 export interface TileProps {
   label: string;
@@ -10,7 +11,6 @@ export interface TileProps {
   family: Family;
   frames: HTMLCanvasElement[];
   frameDurationMs: number;
-  /** Shared clock origin (performance.now) so every tile plays in lock-step. */
   startTime: number;
   selected: boolean;
   onToggle: () => void;
@@ -31,32 +31,9 @@ export default function Tile({
   const frameNumRef = useRef<HTMLSpanElement | null>(null);
   const color = FAMILY_COLORS[family];
 
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || frames.length === 0) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    canvas.width = frames[0].width;
-    canvas.height = frames[0].height;
-
-    let raf = 0;
-    let last = -1;
-    const total = frames.length;
-
-    const tick = () => {
-      const elapsed = performance.now() - startTime;
-      const idx = Math.floor(elapsed / frameDurationMs) % total;
-      if (idx !== last) {
-        ctx.drawImage(frames[idx], 0, 0);
-        if (frameNumRef.current) frameNumRef.current.textContent = `frame ${idx}`;
-        last = idx;
-      }
-      raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [frames, frameDurationMs, startTime]);
+  useFramePlayer(canvasRef, frames, frameDurationMs, startTime, (idx) => {
+    if (frameNumRef.current) frameNumRef.current.textContent = `frame ${idx}`;
+  });
 
   return (
     <figure
