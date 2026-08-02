@@ -203,3 +203,25 @@ def test_generator_annotates_beacons_when_tracker_given(episode_factory):
     rec = out[0].metadata["miniworld"]
     assert "beacons" in rec
     assert len(rec["beacons"]["gripper_uv"]) == reals[0].num_frames
+
+
+def test_generator_preserves_source_frame_representation(episode_factory):
+    """Synthetic frames must match the source dtype AND value range, so float
+    episodes in [0, 1] don't come back 255x too bright (regression test)."""
+    base = episode_factory(seed=7)
+
+    # float32 in [0, 1]: synthetic frames must stay in [0, 1], not [0, 255].
+    float_source = Episode(
+        frames=(base.frames.astype(np.float32) / 255.0),
+        state=base.state, camera_poses=base.camera_poses, intrinsics=base.intrinsics, task=base.task,
+    )
+    cfg = MiniWorldConfig(enabled=True, n_synthetic=1, puck_color=PUCK_COLOR, seed=0)
+    syn = MiniWorldGenerator(cfg).generate([float_source])[0]
+    assert syn.frames.dtype == np.float32
+    assert syn.frames.max() <= 1.0 + 1e-6
+    assert syn.frames.min() >= 0.0
+
+    # uint8 source stays uint8 in [0, 255].
+    uint_syn = MiniWorldGenerator(cfg).generate([base])[0]
+    assert uint_syn.frames.dtype == np.uint8
+    assert uint_syn.frames.max() <= 255

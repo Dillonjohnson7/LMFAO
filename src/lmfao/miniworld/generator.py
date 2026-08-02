@@ -8,7 +8,7 @@ import numpy as np
 from lmfao.datasets import Episode
 from lmfao.miniworld.camera import Camera
 from lmfao.miniworld.config import CameraOffset, MiniWorldConfig
-from lmfao.miniworld.imaging import match_channels
+from lmfao.miniworld.imaging import to_source_frame
 from lmfao.miniworld.inpaint import SimpleInpainter
 from lmfao.miniworld.interfaces import BeaconTracker, Inpainter, NovelViewRenderer, SceneReconstructor
 from lmfao.miniworld.reconstruct import PointSplatReconstructor
@@ -125,7 +125,7 @@ class MiniWorldGenerator:
             rgb, hole = self.renderer.render(cloud, novel_cam)
             hole_fracs[f] = float(hole.mean())
             filled = self.inpainter.inpaint(rgb, hole)
-            out_frames[f] = match_channels(filled, source.channels)
+            out_frames[f] = to_source_frame(filled, source.frames)
 
             gripper_uv.append(self._beacon_uv(self._gripper_world(source, f), novel_cam))
             puck_uv.append(self._beacon_uv(self._puck_world(source, f, scene, moved_puck, puck_shift), novel_cam))
