@@ -7,4 +7,6 @@ When adding a new feature:
 3. Import the class here so it is registered when `lmfao` is imported.
 """
 
-__all__: list[str] = []
+from lmfao.features.spatial import RandomCrop
+
+__all__: list[str] = ["RandomCrop"]
