@@ -8,5 +8,6 @@ When adding a new feature:
 """
 
 from lmfao.features.lighting import BrightnessScale, ColorTemperatureShift, ContrastScale
+from lmfao.features.spatial import RandomCrop
 
-__all__: list[str] = ["BrightnessScale", "ColorTemperatureShift", "ContrastScale"]
+__all__: list[str] = ["BrightnessScale", "ColorTemperatureShift", "ContrastScale", "RandomCrop"]
