@@ -100,7 +100,7 @@ pipeline = AugmentationPipeline.from_config(
     [
         {
             "name": "occlusion.sequence_box",
-            "params": {"box_area_range": (0.05, 0.20), "fill": "mean"},
+            "params": {"box_area_range": (0.05, 0.20)},
             "probability": 0.75,
             "enabled": True,
         },
