@@ -47,7 +47,7 @@ class BorderIntrusionOcclusion(Augmenter):
             region = _border_region(edge, fraction, height, width)
             regions.append({"frame": frame_index, "edge": edge, "fraction": fraction, **region})
             target = augmented if frame_index is None else augmented[frame_index : frame_index + 1]
-            _fill_border(target, region, self.fill, rng)
+            _fill_border(target, region, self.fill)
 
         params = {
             "edges": self.edges,
@@ -71,9 +71,9 @@ def _border_region(edge: str, fraction: float, height: int, width: int) -> dict[
     return {"top": 0, "left": left, "height": height, "width": size}
 
 
-def _fill_border(video: Video, region: dict[str, int], fill: FillMode, rng: np.random.Generator) -> None:
+def _fill_border(video: Video, region: dict[str, int], fill: FillMode) -> None:
     top = region["top"]
     left = region["left"]
     bottom = top + region["height"]
     right = left + region["width"]
-    fill_region(video[:, top:bottom, left:right, :], fill, rng)
+    fill_region(video[:, top:bottom, left:right, :], fill)

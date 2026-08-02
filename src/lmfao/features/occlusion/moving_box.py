@@ -27,7 +27,7 @@ class MovingBoxOcclusion(Augmenter):
     box_area_range: tuple[float, float] = (0.03, 0.18)
     aspect_ratio_range: tuple[float, float] = (0.5, 2.0)
     velocity_range: tuple[float, float] = (-8.0, 8.0)
-    fill: FillMode = "random_color"
+    fill: FillMode = "black"
     edge_bounce: bool = True
 
     def __post_init__(self) -> None:
@@ -57,7 +57,7 @@ class MovingBoxOcclusion(Augmenter):
             left = _position(box["left"], velocity["x"], frame_index, width - box["width"], self.edge_bounce)
             bottom = top + box["height"]
             right = left + box["width"]
-            fill_region(augmented[frame_index, top:bottom, left:right, :], self.fill, rng)
+            fill_region(augmented[frame_index, top:bottom, left:right, :], self.fill)
             positions.append({"frame": frame_index, "top": top, "left": left})
 
         params = {
