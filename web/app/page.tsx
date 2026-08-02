@@ -9,11 +9,13 @@ import { FRAMES_HEAVY, FRAMES_MIN, useStudio } from "@/lib/useStudio";
 export default function Page() {
   const s = useStudio();
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const folderRef = useRef<HTMLInputElement | null>(null);
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
 
   const selectedCount = s.selected.size;
-  const exportPct =
-    s.exporting && s.exporting.total ? Math.round((s.exporting.done / s.exporting.total) * 100) : 0;
+  // Only count real augmentations toward the job (the untouched original
+  // panel exports nothing).
+  const jobCount = s.tiles.filter((t) => s.selected.has(t.spec.id) && t.spec.family !== "original").length;
 
   return (
     <div className="clean">
@@ -33,14 +35,19 @@ export default function Page() {
             See every augmentation on your footage before you commit it to a training run.
           </h1>
           <p className="clean-standfirst">
-            Load one demonstration clip. It is decoded in your browser and run through each
-            augmenter in the library, one per panel, so you can judge the effect frame by frame.
-            Keep the panels that look right and export them as a dataset.
+            Load a LeRobot dataset folder (or a single clip). Real episode frames are decoded in
+            your browser and run through each augmenter in the library, one per panel, so you can
+            judge the effect frame by frame. Keep the panels that look right and export a job
+            config; the <code>lmfao-augment</code> CLI then applies it to every episode and writes
+            a true LeRobot dataset.
           </p>
 
           <div className="clean-actions">
-            <button className="clean-btn solid" onClick={() => inputRef.current?.click()} disabled={s.busy}>
-              {s.busy ? "Working" : "Choose a video"}
+            <button className="clean-btn solid" onClick={() => folderRef.current?.click()} disabled={s.busy}>
+              {s.busy ? "Working" : "Choose a dataset folder"}
+            </button>
+            <button className="clean-btn" onClick={() => inputRef.current?.click()} disabled={s.busy}>
+              Single video
             </button>
             <button className="clean-btn" onClick={s.runDemo} disabled={s.busy}>
               Use the sample clip
@@ -73,7 +80,54 @@ export default function Page() {
               hidden
               onChange={(e) => s.onFile(e.target.files?.[0])}
             />
+            <input
+              ref={folderRef}
+              type="file"
+              hidden
+              // Non-standard but universally supported attribute for picking a
+              // whole directory; not in React's TS types.
+              {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
+              onChange={(e) => s.onFolder(e.target.files)}
+            />
           </div>
+
+          {s.dataset && (
+            <div className="clean-actions" style={{ marginTop: "0.75rem" }}>
+              <label className="clean-frames">
+                Episode
+                <select
+                  value={s.episodeIndex}
+                  disabled={s.busy}
+                  onChange={(e) => s.selectEpisode(Number(e.target.value))}
+                >
+                  {s.dataset.episodes.map((ep, i) => (
+                    <option key={ep.index} value={i}>
+                      {ep.index} ({ep.length} frames)
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {s.dataset.cameras.length > 1 && (
+                <label className="clean-frames">
+                  Camera
+                  <select
+                    value={s.camera ?? ""}
+                    disabled={s.busy}
+                    onChange={(e) => s.selectCamera(e.target.value)}
+                  >
+                    {s.dataset.cameras.map((c) => (
+                      <option key={c} value={c}>
+                        {c.replace(/^observation\.images\./, "")}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              <span className="clean-hint" style={{ margin: 0 }}>
+                {s.dataset.episodes.length} episodes · the exported job augments all of them
+              </span>
+            </div>
+          )}
 
           {!s.busy && s.frameCount > FRAMES_HEAVY && (
             <p className="clean-hint">
@@ -121,9 +175,9 @@ export default function Page() {
                 <button
                   className="clean-btn solid sm"
                   onClick={s.onExport}
-                  disabled={selectedCount === 0 || !!s.exporting}
+                  disabled={jobCount === 0 || s.exporting}
                 >
-                  {s.exporting ? `Exporting ${exportPct}%` : `Export dataset (${selectedCount})`}
+                  {s.exporting ? "Exporting…" : `Export CLI job (${jobCount})`}
                 </button>
               </div>
             </div>

@@ -107,11 +107,9 @@ export default function SlopPage() {
               <button
                 className="btn tiny primary"
                 onClick={s.onExport}
-                disabled={s.selected.size === 0 || !!s.exporting}
+                disabled={s.selected.size === 0 || s.exporting}
               >
-                {s.exporting
-                  ? `Exporting… ${s.exporting.total ? Math.round((s.exporting.done / s.exporting.total) * 100) : 0}%`
-                  : `⬇ Download dataset (${s.selected.size})`}
+                {s.exporting ? "Exporting…" : `⬇ Export CLI job (${s.selected.size})`}
               </button>
             </div>
           </div>
@@ -149,8 +147,8 @@ export default function SlopPage() {
               <li><span className="swatch occlusion" /> occlusion: sequence box, border intrusion, moving box</li>
             </ul>
             <p className="empty-note">
-              Tap variants to select/deselect (they all start selected), then download the ones
-              you like as a single <code>.zip</code> dataset: PNG frames plus an lmfao-ready config.
+              Tap variants to select/deselect (they all start selected), then export a job config
+              for the <code>lmfao-augment</code> CLI, which writes a true LeRobot dataset.
             </p>
           </div>
         </section>
