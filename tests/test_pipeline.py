@@ -31,6 +31,8 @@ def test_registered_augmenters_are_visible_in_hub():
         assert "lighting" in info_by_name[name].tags
     assert "spatial" in info_by_name["spatial.random_crop"].tags
 
+    assert "spatial" in info_by_name["spatial.random_crop"].tags
+
 
 def test_pipeline_preserves_shape_and_dtype():
     video = np.full((4, 8, 8, 3), 128, dtype=np.uint8)
