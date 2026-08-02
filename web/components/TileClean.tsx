@@ -15,6 +15,7 @@ export interface TileCleanProps {
   startTime: number;
   selected: boolean;
   onToggle: () => void;
+  onOpen: () => void;
 }
 
 export default function TileClean({
@@ -28,6 +29,7 @@ export default function TileClean({
   startTime,
   selected,
   onToggle,
+  onOpen,
 }: TileCleanProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const frameNumRef = useRef<HTMLSpanElement | null>(null);
@@ -38,23 +40,38 @@ export default function TileClean({
   });
 
   return (
-    <figure
-      className={`clean-tile${selected ? " sel" : ""}`}
-      style={{ "--fam": color } as CSSProperties}
-    >
-      <button
-        type="button"
+    <figure className={`clean-tile${selected ? " sel" : ""}`} style={{ "--fam": color } as CSSProperties}>
+      <div
         className="clean-thumb"
-        onClick={onToggle}
-        aria-pressed={selected}
-        aria-label={`${selected ? "Deselect" : "Select"} ${label}`}
+        role="button"
+        tabIndex={0}
+        aria-label={`Preview ${label}`}
+        onClick={onOpen}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onOpen();
+          }
+        }}
       >
         <canvas ref={canvasRef} />
         <span className="clean-frame">
           <span ref={frameNumRef}>00</span>
         </span>
-        <span className="clean-box" aria-hidden="true" />
-      </button>
+        <button
+          type="button"
+          className="clean-box"
+          aria-pressed={selected}
+          aria-label={`${selected ? "Deselect" : "Select"} ${label}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggle();
+          }}
+        />
+        <span className="clean-expand" aria-hidden="true">
+          Preview
+        </span>
+      </div>
       <figcaption className="clean-cap">
         <div className="clean-caphead">
           <span className="clean-num">{String(index).padStart(2, "0")}</span>
