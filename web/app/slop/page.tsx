@@ -95,6 +95,9 @@ export default function SlopPage() {
               <strong>{s.selected.size}</strong> of {s.tiles.length} selected
             </div>
             <div className="toolbar-actions">
+              <button className="btn tiny ghost" onClick={s.toggleRealtime}>
+                {s.realtime ? `⏱ Real-time ${Math.round(s.playbackFps)}fps` : "⏱ Overview 8fps"}
+              </button>
               <button className="btn tiny ghost" onClick={s.selectAll} disabled={!!s.exporting}>
                 Select all
               </button>
