@@ -6,4 +6,6 @@ __pycache__/
 build/
 dist/
 data/
+test_videos/
+augmented_videos/
 
