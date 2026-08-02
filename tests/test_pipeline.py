@@ -12,16 +12,29 @@ class TestPassthrough(Augmenter):
         return video.copy(), metadata
 
 
-def test_builtin_occlusion_augmenters_are_registered():
-    augmenters = list_augmenters()
-    assert "occlusion.border_intrusion" in augmenters
-    assert "occlusion.moving_box" in augmenters
-    assert "occlusion.sequence_box" in augmenters
-    assert "test_passthrough" in augmenters
+def test_registered_augmenters_are_visible_in_hub():
+    assert list_augmenters() == [
+        "lighting.brightness",
+        "lighting.color_temperature",
+        "lighting.contrast",
+        "occlusion.border_intrusion",
+        "occlusion.moving_box",
+        "occlusion.sequence_box",
+        "spatial.random_crop",
+        "test_passthrough",
+    ]
 
-    info = next(item for item in list_augmenter_info() if item.name == "test_passthrough")
-    assert info.tags == ("test",)
-    assert info.description == "A test-only passthrough augmenter."
+    info_by_name = {info.name: info for info in list_augmenter_info()}
+
+    passthrough = info_by_name["test_passthrough"]
+    assert passthrough.tags == ("test",)
+    assert passthrough.description == "A test-only passthrough augmenter."
+
+    for name in ("lighting.brightness", "lighting.color_temperature", "lighting.contrast"):
+        assert "lighting" in info_by_name[name].tags
+    for name in ("occlusion.border_intrusion", "occlusion.moving_box", "occlusion.sequence_box"):
+        assert "occlusion" in info_by_name[name].tags
+    assert "spatial" in info_by_name["spatial.random_crop"].tags
 
 
 def test_pipeline_preserves_shape_and_dtype():
