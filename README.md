@@ -34,6 +34,31 @@ have.
 pip install -e ".[dev]"
 ```
 
+## Available augmentations
+
+Shipping today:
+
+- **lighting:** `lighting.brightness`, `lighting.contrast`,
+  `lighting.color_temperature`
+- **noise:** `noise.gaussian`, `noise.uniform`
+- **occlusion:** `occlusion.sequence_box`, `occlusion.border_intrusion`,
+  `occlusion.moving_box`
+- **spatial:** `spatial.random_crop`
+
+Noise draws its random numbers on a GPU when one happens to be available, which
+is roughly 30x faster than NumPy. Nothing changes at the call site and no GPU is
+required.
+
+Further effects are on the way. To list exactly what is registered in your
+install:
+
+```python
+from lmfao import list_augmenter_info
+
+for feature in list_augmenter_info():
+    print(feature.name, feature.tags, feature.description)
+```
+
 ## Basic usage
 
 A clip is a NumPy array of shape `(frames, height, width, channels)`, the same
@@ -65,31 +90,6 @@ print(metadata["augmentation_params"])  # the parameters they sampled
 
 Change the `seed` and each pass gives you a fresh variant of the same clip; keep
 it fixed and the run is byte-for-byte repeatable.
-
-## Available augmentations
-
-Shipping today:
-
-- **lighting:** `lighting.brightness`, `lighting.contrast`,
-  `lighting.color_temperature`
-- **noise:** `noise.gaussian`, `noise.uniform`
-- **occlusion:** `occlusion.sequence_box`, `occlusion.border_intrusion`,
-  `occlusion.moving_box`
-- **spatial:** `spatial.random_crop`
-
-Noise draws its random numbers on a GPU when one happens to be available, which
-is roughly 30x faster than NumPy. Nothing changes at the call site and no GPU is
-required.
-
-Further effects are on the way. To list exactly what is registered in your
-install:
-
-```python
-from lmfao import list_augmenter_info
-
-for feature in list_augmenter_info():
-    print(feature.name, feature.tags, feature.description)
-```
 
 ## Adding a feature
 
