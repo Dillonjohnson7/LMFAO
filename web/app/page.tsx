@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRef } from "react";
 import TileClean from "@/components/TileClean";
-import { FRAMES_MAX, FRAMES_MIN, useStudio } from "@/lib/useStudio";
+import { FRAMES_HEAVY, FRAMES_MIN, useStudio } from "@/lib/useStudio";
 
 export default function Page() {
   const s = useStudio();
@@ -48,13 +48,17 @@ export default function Page() {
               <input
                 type="number"
                 min={FRAMES_MIN}
-                max={FRAMES_MAX}
                 step={1}
                 value={s.frameCount}
                 disabled={s.busy}
                 onChange={(e) => s.onFramesChange(Number(e.target.value))}
               />
             </label>
+            {s.busy && (
+              <button className="clean-btn quiet" onClick={s.cancel}>
+                Cancel
+              </button>
+            )}
             {s.fileName && s.status === "ready" && (
               <button className="clean-btn quiet" onClick={s.regenerate} disabled={s.busy}>
                 Regenerate at {s.frameCount}
@@ -69,9 +73,17 @@ export default function Page() {
             />
           </div>
 
+          {!s.busy && s.frameCount > FRAMES_HEAVY && (
+            <p className="clean-hint">
+              {s.frameCount} frames is a lot: decoding is sequential and each panel keeps its own
+              copy, so this can be slow and memory-heavy. You can cancel mid-run.
+            </p>
+          )}
+
           {s.fileName && s.status !== "error" && (
             <p className="clean-status">
-              {s.status === "decoding" && `Decoding ${s.fileName}`}
+              {s.status === "decoding" &&
+                `Decoding ${s.fileName}, frame ${s.progress.done} of ${s.progress.total}`}
               {s.status === "augmenting" && `Rendering augmentations ${s.progress.done} of ${s.progress.total}`}
               {s.status === "ready" &&
                 s.meta &&

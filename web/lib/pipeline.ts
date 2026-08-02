@@ -24,11 +24,13 @@ const nextFrame = () =>
 
 export async function buildTiles(
   base: ImageData[],
-  onProgress?: (done: number, total: number) => void
+  onProgress?: (done: number, total: number) => void,
+  signal?: AbortSignal
 ): Promise<TileData[]> {
   const tiles: TileData[] = [];
   const total = AUGMENTATIONS.length;
   for (let i = 0; i < total; i++) {
+    if (signal?.aborted) throw new DOMException("Augmentation cancelled", "AbortError");
     const spec = AUGMENTATIONS[i];
     const augmented = spec.fn(base, seedFor(i));
     tiles.push({ spec, frames: augmented.map(toCanvas) });

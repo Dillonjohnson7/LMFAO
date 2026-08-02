@@ -568,6 +568,15 @@ code {
   outline: none;
   border-color: var(--ink);
 }
+.clean-hint {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
+  border-left: 2px solid var(--rule);
+  padding-left: 12px;
+  margin: 18px 0 0;
+  max-width: 60ch;
+}
 .clean-status {
   font-family: var(--mono);
   font-size: 12.5px;

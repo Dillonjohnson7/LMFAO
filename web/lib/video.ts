@@ -16,9 +16,15 @@ export interface ExtractedClip {
 export interface ExtractOptions {
   maxFrames?: number;
   maxWidth?: number;
+  signal?: AbortSignal;
+  onFrame?: (done: number, total: number) => void;
 }
 
 const DEFAULTS = { maxFrames: 28, maxWidth: 320 };
+
+function abortError(): Error {
+  return new DOMException("Extraction cancelled", "AbortError");
+}
 
 function waitFor(el: HTMLVideoElement, event: string, timeoutMs = 12000): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -66,6 +72,7 @@ export async function extractFrames(
 ): Promise<ExtractedClip> {
   const maxFrames = opts.maxFrames ?? DEFAULTS.maxFrames;
   const maxWidth = opts.maxWidth ?? DEFAULTS.maxWidth;
+  const signal = opts.signal;
 
   const objectUrl = typeof source === "string" ? null : URL.createObjectURL(source);
   const src = objectUrl ?? (source as string);
@@ -78,6 +85,7 @@ export async function extractFrames(
   video.src = src;
 
   try {
+    if (signal?.aborted) throw abortError();
     await waitFor(video, "loadedmetadata");
     // Nudge decoding so the first frame is actually available to draw.
     await seek(video, 0);
@@ -105,10 +113,12 @@ export async function extractFrames(
     // doesn't overshoot the end and return a blank frame.
     const span = duration > 0 ? duration * 0.98 : 0;
     for (let i = 0; i < frameCount; i++) {
+      if (signal?.aborted) throw abortError();
       const t = frameCount > 1 ? (span * i) / (frameCount - 1) : 0;
       await seek(video, t);
       ctx.drawImage(video, 0, 0, width, height);
       frames.push(ctx.getImageData(0, 0, width, height));
+      opts.onFrame?.(i + 1, frameCount);
     }
 
     const fps = duration > 0 ? frameCount / duration : 12;

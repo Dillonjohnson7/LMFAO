@@ -9,8 +9,11 @@ export type Status = "idle" | "decoding" | "augmenting" | "ready" | "error";
 
 export const DEMO_SRC = "/demo.mp4";
 export const FRAMES_DEFAULT = 28;
-export const FRAMES_MIN = 4;
-export const FRAMES_MAX = 64;
+export const FRAMES_MIN = 2;
+// No hard maximum: extraction and augmentation are cancellable, so the user
+// can ask for as many frames as they want and abort if it drags. This is only
+// the point past which we surface a "this may be heavy" hint in the UI.
+export const FRAMES_HEAVY = 80;
 
 // All studio state + actions, shared by every skin of the UI (slop / non-slop).
 export function useStudio() {
@@ -27,31 +30,56 @@ export function useStudio() {
 
   const frameCountRef = useRef(FRAMES_DEFAULT);
   const lastSourceRef = useRef<{ source: File | string; name: string } | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   const frameDurationMs = useMemo(() => 1000 / 8, []);
 
   const run = useCallback(async (source: File | string, name: string) => {
     lastSourceRef.current = { source, name };
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const { signal } = controller;
+
     setError(null);
     setStatus("decoding");
     setTiles([]);
     setSelected(new Set());
     setFileName(name);
+    setProgress({ done: 0, total: frameCountRef.current });
     try {
-      const clip = await extractFrames(source, { maxFrames: frameCountRef.current, maxWidth: 320 });
+      const clip = await extractFrames(source, {
+        maxFrames: frameCountRef.current,
+        maxWidth: 320,
+        signal,
+        onFrame: (done, total) => setProgress({ done, total }),
+      });
       if (clip.frames.length === 0) throw new Error("No frames could be decoded from this file.");
       setMeta({ w: clip.width, h: clip.height, frames: clip.frames.length, fps: clip.fps });
       setStatus("augmenting");
       setProgress({ done: 0, total: 0 });
-      const built = await buildTiles(clip.frames, (done, total) => setProgress({ done, total }));
+      const built = await buildTiles(clip.frames, (done, total) => setProgress({ done, total }), signal);
       setTiles(built);
       setSelected(new Set(built.map((t) => t.spec.id)));
       setStartTime(performance.now());
       setStatus("ready");
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setStatus("error");
+      if (signal.aborted || (e as { name?: string })?.name === "AbortError") {
+        // User cancelled: quietly return to the idle state.
+        setStatus("idle");
+        setFileName(null);
+        setTiles([]);
+        setProgress({ done: 0, total: 0 });
+      } else {
+        setError(e instanceof Error ? e.message : String(e));
+        setStatus("error");
+      }
+    } finally {
+      if (abortRef.current === controller) abortRef.current = null;
     }
+  }, []);
+
+  const cancel = useCallback(() => {
+    abortRef.current?.abort();
   }, []);
 
   const onFile = useCallback(
@@ -80,7 +108,8 @@ export function useStudio() {
   const clearAll = useCallback(() => setSelected(new Set()), []);
 
   const onFramesChange = useCallback((raw: number) => {
-    const clamped = Math.max(FRAMES_MIN, Math.min(FRAMES_MAX, Math.round(raw || FRAMES_MIN)));
+    // Clamp to a sane minimum only; no maximum (the run is cancellable).
+    const clamped = Math.max(FRAMES_MIN, Math.round(raw || FRAMES_MIN));
     setFrameCount(clamped);
     frameCountRef.current = clamped;
   }, []);
@@ -129,6 +158,7 @@ export function useStudio() {
     busy,
     run,
     runDemo,
+    cancel,
     onFile,
     toggle,
     selectAll,
