@@ -1,19 +1,26 @@
-import numpy as np
-
-from lmfao import AugmentationPipeline
+from lmfao import KernelPipeline
 
 
-video = np.full((16, 64, 64, 3), 128, dtype=np.uint8)
+class ExampleRuntime:
+    def upload_video(self, path):
+        return {"device_buffer": path}
 
-pipeline = AugmentationPipeline.from_config(
+    def launch_kernel(self, kernel_name, grid, block, args, stream=None):
+        print(kernel_name, grid, block, args, stream)
+
+
+runtime = ExampleRuntime()
+video = runtime.upload_video("path/to/video.mp4")
+
+pipeline = KernelPipeline.from_config(
     [
         # Add registered feature configs here, for example:
-        # {"name": "lighting", "params": {"strength": 0.5}, "probability": 0.75},
+        # {"name": "lighting.shadow", "params": {"strength": 0.5}, "probability": 0.75},
     ],
     seed=42,
 )
 
-augmented_video, metadata = pipeline(video, metadata={"source": "demo"})
+augmented_video, metadata = pipeline(video, runtime, metadata={"source": "demo"})
 
-print(augmented_video.shape)
+print(augmented_video)
 print(metadata)

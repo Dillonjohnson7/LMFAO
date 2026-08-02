@@ -1,17 +1,24 @@
 """Lightweight Modular Feature-Based Augmentation Operation."""
 
-from lmfao.base import Augmenter, Video
-from lmfao.pipeline import AugmentationPipeline, AugmentationStep
-from lmfao.registry import AugmenterRegistry, build_augmenter, get_augmenter, list_augmenter_info, list_augmenters
+from lmfao.base import KernelFeature, KernelRuntime, Video
+from lmfao.pipeline import KernelPipeline, KernelStep
+from lmfao.registry import (
+    KernelFeatureRegistry,
+    build_kernel_feature,
+    get_kernel_feature,
+    list_kernel_feature_info,
+    list_kernel_features,
+)
 
 __all__ = [
-    "Augmenter",
-    "AugmentationPipeline",
-    "AugmentationStep",
-    "AugmenterRegistry",
+    "KernelFeature",
+    "KernelFeatureRegistry",
+    "KernelPipeline",
+    "KernelRuntime",
+    "KernelStep",
     "Video",
-    "build_augmenter",
-    "get_augmenter",
-    "list_augmenter_info",
-    "list_augmenters",
+    "build_kernel_feature",
+    "get_kernel_feature",
+    "list_kernel_feature_info",
+    "list_kernel_features",
 ]
