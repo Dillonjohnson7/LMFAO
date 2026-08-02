@@ -32,7 +32,7 @@ video = np.full((16, 64, 64, 3), 128, dtype=np.uint8)
 pipeline = AugmentationPipeline.from_config(
     [
         # Add registered feature configs here, for example:
-        # {"name": "lighting", "params": {"strength": 0.5}},
+        # {"name": "lighting", "params": {"strength": 0.5}, "probability": 0.75},
     ],
     seed=42,
 )
@@ -57,7 +57,11 @@ from lmfao.base import Augmenter, Metadata, Video
 from lmfao.registry import register_augmenter
 
 
-@register_augmenter("my_feature")
+@register_augmenter(
+    "my_feature",
+    tags=("lighting",),
+    description="Short description shown by the central feature hub.",
+)
 @dataclass
 class MyFeature(Augmenter):
     strength: float = 1.0

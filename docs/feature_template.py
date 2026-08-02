@@ -8,11 +8,13 @@ from lmfao.base import Augmenter, Metadata, Video
 from lmfao.registry import register_augmenter
 
 
-# Copy this file when starting a new feature. Do not import this module from
-# `features/__init__.py`; it is a template, not an active augmentation.
-@register_augmenter("example_feature")
+@register_augmenter(
+    "feature_name",
+    tags=("category",),
+    description="Short human-readable description for the central hub.",
+)
 @dataclass
-class ExampleFeature(Augmenter):
+class FeatureName(Augmenter):
     strength: float = 1.0
 
     def apply(self, video: Video, metadata: Metadata, rng: np.random.Generator) -> tuple[Video, Metadata]:
