@@ -12,12 +12,22 @@ class TestPassthrough(Augmenter):
         return video.copy(), metadata
 
 
-def test_no_builtin_augmenters_are_registered_yet():
-    assert list_augmenters() == ["test_passthrough"]
-    [info] = list_augmenter_info()
-    assert info.name == "test_passthrough"
-    assert info.tags == ("test",)
-    assert info.description == "A test-only passthrough augmenter."
+def test_registered_augmenters_are_visible_in_hub():
+    assert list_augmenters() == [
+        "lighting.brightness",
+        "lighting.color_temperature",
+        "lighting.contrast",
+        "test_passthrough",
+    ]
+
+    info_by_name = {info.name: info for info in list_augmenter_info()}
+
+    passthrough = info_by_name["test_passthrough"]
+    assert passthrough.tags == ("test",)
+    assert passthrough.description == "A test-only passthrough augmenter."
+
+    for name in ("lighting.brightness", "lighting.color_temperature", "lighting.contrast"):
+        assert "lighting" in info_by_name[name].tags
 
 
 def test_pipeline_preserves_shape_and_dtype():
