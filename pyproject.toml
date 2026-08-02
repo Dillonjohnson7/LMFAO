@@ -25,6 +25,17 @@ dev = [
 miniworld = [
     "torch>=2.1",
 ]
+# LeRobot dataset I/O (the reader/writer and the lmfao-augment CLI). Kept out of
+# the core so the pixel-augmentation modules never inherit pyarrow or a video
+# codec. pyarrow reads/writes the parquet metadata; PyAV decodes and re-encodes
+# the per-camera mp4 video.
+datasets = [
+    "pyarrow>=15",
+    "av>=12",
+]
+
+[project.scripts]
+lmfao-augment = "lmfao.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
