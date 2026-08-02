@@ -42,3 +42,31 @@ def match_channels(rgb_uint8: np.ndarray, channels: int) -> np.ndarray:
         alpha = np.full(rgb_uint8.shape[:2] + (1,), 255, dtype=np.uint8)
         return np.concatenate([rgb_uint8, alpha], axis=-1)
     raise ValueError(f"unsupported channel count: {channels}")
+
+
+def to_source_frame(rgb_uint8: np.ndarray, reference: np.ndarray) -> np.ndarray:
+    """Convert an ``(H, W, 3)`` uint8 RGB render into the reference frames'
+    channel count, dtype, and value range.
+
+    Synthetic frames must be represented exactly like the real episode's frames:
+    downstream augmenters treat a float video as already scaled (``[0, 1]`` or
+    ``[0, 255]``), so writing raw ``0..255`` values into a float ``[0, 1]``
+    episode would make synthetic frames ~255x too bright. This is the inverse of
+    :func:`to_unit_rgb`; the float-range convention is inferred from the whole
+    reference array so a single dark frame can't mislead it.
+    """
+    reference = np.asarray(reference)
+    matched = match_channels(rgb_uint8, reference.shape[-1])  # uint8, right channels
+    dtype = reference.dtype
+
+    if np.issubdtype(dtype, np.integer):
+        info = np.iinfo(dtype)
+        if info.max == 255:
+            return matched.astype(dtype)
+        scaled = np.rint(matched.astype(np.float64) / 255.0 * info.max)
+        return np.clip(scaled, info.min, info.max).astype(dtype)
+
+    # Float target: match the reference's [0, 1] vs [0, 255] convention.
+    hi = float(reference.max()) if reference.size else 1.0
+    scale = 1.0 if hi <= 1.0 else 255.0
+    return (matched.astype(np.float64) / 255.0 * scale).astype(dtype)
