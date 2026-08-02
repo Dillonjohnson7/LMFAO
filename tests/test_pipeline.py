@@ -12,10 +12,14 @@ class TestPassthrough(Augmenter):
         return video.copy(), metadata
 
 
-def test_no_builtin_augmenters_are_registered_yet():
-    assert list_augmenters() == ["test_passthrough"]
-    [info] = list_augmenter_info()
-    assert info.name == "test_passthrough"
+def test_builtin_occlusion_augmenters_are_registered():
+    augmenters = list_augmenters()
+    assert "occlusion.border_intrusion" in augmenters
+    assert "occlusion.moving_box" in augmenters
+    assert "occlusion.sequence_box" in augmenters
+    assert "test_passthrough" in augmenters
+
+    info = next(item for item in list_augmenter_info() if item.name == "test_passthrough")
     assert info.tags == ("test",)
     assert info.description == "A test-only passthrough augmenter."
 
