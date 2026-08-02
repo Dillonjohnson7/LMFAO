@@ -32,6 +32,9 @@ jobs:
             exit 1
           fi
 
+      - name: Lint
+        run: uv run ruff check src tests
+
       - name: Byte-compile source
         run: uv run python -m compileall -q src
 

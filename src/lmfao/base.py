@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Mapping, MutableMapping, Optional
+from collections.abc import Mapping, MutableMapping
+from typing import Any
 
 import numpy as np
 
@@ -23,8 +24,8 @@ class Augmenter(ABC):
     def __call__(
         self,
         video: Video,
-        metadata: Optional[Mapping[str, Any]] = None,
-        rng: Optional[np.random.Generator] = None,
+        metadata: Mapping[str, Any] | None = None,
+        rng: np.random.Generator | None = None,
     ) -> tuple[Video, Metadata]:
         self.validate_video(video)
         run_rng = rng if rng is not None else np.random.default_rng()
@@ -53,4 +54,3 @@ def preserve_dtype(original: Video, augmented: Video) -> Video:
         return np.clip(augmented, info.min, info.max).astype(original.dtype)
 
     return augmented.astype(original.dtype, copy=False)
-
