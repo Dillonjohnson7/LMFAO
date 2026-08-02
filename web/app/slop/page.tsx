@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRef } from "react";
 import Tile from "@/components/Tile";
-import { FRAMES_MAX, FRAMES_MIN, useStudio } from "@/lib/useStudio";
+import { FRAMES_MIN, useStudio } from "@/lib/useStudio";
 
 export default function SlopPage() {
   const s = useStudio();
@@ -35,19 +35,24 @@ export default function SlopPage() {
             Try the demo clip
           </button>
 
-          <div className="field" title={`Frames extracted per clip (${FRAMES_MIN} to ${FRAMES_MAX})`}>
+          <div className="field" title={`Frames extracted per clip (min ${FRAMES_MIN}, no maximum)`}>
             <label htmlFor="frames">Frames / clip</label>
             <input
               id="frames"
               type="number"
               min={FRAMES_MIN}
-              max={FRAMES_MAX}
               step={1}
               value={s.frameCount}
               disabled={s.busy}
               onChange={(e) => s.onFramesChange(Number(e.target.value))}
             />
           </div>
+
+          {s.busy && (
+            <button className="btn ghost" onClick={s.cancel}>
+              ✕ Cancel
+            </button>
+          )}
 
           {s.fileName && s.status === "ready" && (
             <button className="btn ghost" onClick={s.regenerate} disabled={s.busy}>
@@ -67,7 +72,8 @@ export default function SlopPage() {
         {s.fileName && s.status !== "error" && (
           <div className="status-line">
             <span className="dot" data-status={s.status} />
-            {s.status === "decoding" && `Decoding frames from ${s.fileName}…`}
+            {s.status === "decoding" &&
+              `Decoding ${s.fileName}… frame ${s.progress.done}/${s.progress.total}`}
             {s.status === "augmenting" && `Applying augmentations… ${s.progress.done}/${s.progress.total}`}
             {s.status === "ready" &&
               s.meta &&
