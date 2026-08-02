@@ -98,6 +98,15 @@ export default function Page() {
             <div className="clean-bar">
               <div className="clean-bar-count">
                 {selectedCount} of {s.tiles.length} kept
+                <button
+                  className="clean-textbtn playback"
+                  onClick={s.toggleRealtime}
+                  title="Switch between real-time and overview playback"
+                >
+                  {s.realtime
+                    ? `real-time, ${Math.round(s.playbackFps)} fps`
+                    : `overview, ${Math.round(s.playbackFps)} fps`}
+                </button>
               </div>
               <div className="clean-bar-actions">
                 <button className="clean-textbtn" onClick={s.selectAll} disabled={!!s.exporting}>

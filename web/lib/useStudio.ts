@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { buildTiles, type TileData } from "./pipeline";
 import { downloadBlob, exportDataset } from "./exporter";
 import { extractFrames } from "./video";
@@ -14,6 +14,11 @@ export const FRAMES_MIN = 2;
 // can ask for as many frames as they want and abort if it drags. This is only
 // the point past which we surface a "this may be heavy" hint in the UI.
 export const FRAMES_HEAVY = 80;
+// Overview playback rate (a slideshow across the whole clip).
+export const OVERVIEW_FPS = 8;
+// If the sampled rate (frames / duration) exceeds this, the frames are dense
+// enough that real-time playback looks right, so default to it.
+export const REALTIME_THRESHOLD_FPS = 15;
 
 // All studio state + actions, shared by every skin of the UI (slop / non-slop).
 export function useStudio() {
@@ -27,12 +32,17 @@ export function useStudio() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [exporting, setExporting] = useState<{ done: number; total: number } | null>(null);
   const [frameCount, setFrameCount] = useState(FRAMES_DEFAULT);
+  const [realtime, setRealtime] = useState(false);
 
   const frameCountRef = useRef(FRAMES_DEFAULT);
   const lastSourceRef = useRef<{ source: File | string; name: string } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  const frameDurationMs = useMemo(() => 1000 / 8, []);
+  // The sampled rate: how many extracted frames each real second of the clip
+  // maps to. This is what "real-time" playback runs at.
+  const sampledFps = meta?.fps ?? OVERVIEW_FPS;
+  const playbackFps = Math.max(1, realtime ? sampledFps : OVERVIEW_FPS);
+  const frameDurationMs = 1000 / playbackFps;
 
   const run = useCallback(async (source: File | string, name: string) => {
     lastSourceRef.current = { source, name };
@@ -55,6 +65,8 @@ export function useStudio() {
       });
       if (clip.frames.length === 0) throw new Error("No frames could be decoded from this file.");
       setMeta({ w: clip.width, h: clip.height, frames: clip.frames.length, fps: clip.fps });
+      // Dense sampling -> real-time reads well, so default to it.
+      setRealtime(clip.fps > REALTIME_THRESHOLD_FPS);
       setStatus("augmenting");
       setProgress({ done: 0, total: 0 });
       const built = await buildTiles(clip.frames, (done, total) => setProgress({ done, total }), signal);
@@ -80,6 +92,12 @@ export function useStudio() {
 
   const cancel = useCallback(() => {
     abortRef.current?.abort();
+  }, []);
+
+  const toggleRealtime = useCallback(() => {
+    setRealtime((r) => !r);
+    // Restart the shared clock so the new rate plays from frame 0 cleanly.
+    setStartTime(performance.now());
   }, []);
 
   const onFile = useCallback(
@@ -155,10 +173,14 @@ export function useStudio() {
     exporting,
     frameCount,
     frameDurationMs,
+    realtime,
+    sampledFps,
+    playbackFps,
     busy,
     run,
     runDemo,
     cancel,
+    toggleRealtime,
     onFile,
     toggle,
     selectAll,
