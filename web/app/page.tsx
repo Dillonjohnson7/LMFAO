@@ -1,13 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import TileClean from "@/components/TileClean";
+import Viewer from "@/components/Viewer";
 import { FRAMES_HEAVY, FRAMES_MIN, useStudio } from "@/lib/useStudio";
 
 export default function Page() {
   const s = useStudio();
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const [viewerIndex, setViewerIndex] = useState<number | null>(null);
 
   const selectedCount = s.selected.size;
   const exportPct =
@@ -140,10 +142,29 @@ export default function Page() {
                   startTime={s.startTime}
                   selected={s.selected.has(t.spec.id)}
                   onToggle={() => s.toggle(t.spec.id)}
+                  onOpen={() => setViewerIndex(i)}
                 />
               ))}
             </section>
           </>
+        )}
+
+        {viewerIndex !== null && s.tiles[viewerIndex] && (
+          <Viewer
+            tiles={s.tiles}
+            index={viewerIndex}
+            frameDurationMs={s.frameDurationMs}
+            startTime={s.startTime}
+            playbackLabel={
+              s.realtime
+                ? `real-time, ${Math.round(s.playbackFps)} fps`
+                : `overview, ${Math.round(s.playbackFps)} fps`
+            }
+            isSelected={s.selected.has(s.tiles[viewerIndex].spec.id)}
+            onToggle={s.toggle}
+            onNavigate={setViewerIndex}
+            onClose={() => setViewerIndex(null)}
+          />
         )}
 
         {s.status === "idle" && (
