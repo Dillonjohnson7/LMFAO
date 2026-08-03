@@ -479,7 +479,7 @@ code {
 .clean-expansion {
   font-family: var(--serif);
   font-weight: 400;
-  font-size: clamp(30px, 5vw, 60px);
+  font-size: clamp(24px, 4vw, 48px);
   line-height: 1.08;
   letter-spacing: -0.02em;
   color: var(--muted);
