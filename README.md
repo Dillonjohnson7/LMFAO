@@ -1,32 +1,36 @@
 # LMFAO
 
-Lightweight Modular Feature-Based Augmentation Operation.
+**A command-line tool for augmenting robot-learning datasets.** Point `lmfao` at a
+[LeRobot](https://github.com/huggingface/lerobot) v3 dataset — a local folder or a
+Hugging Face link — and it turns each recorded episode into many varied training
+clips (relit, noised, occluded, re-cropped) and writes them back out as a
+ready-to-train LeRobot dataset.
+
+*LMFAO = Lightweight Modular Feature-Based Augmentation Operation.*
 
 Collecting robot demonstrations is the expensive part. Teleoperating an arm
-through hundreds of pick-and-place episodes is slow and tedious, and a policy
-trained on those clips tends to latch onto the exact lighting, background, and
-camera framing it happened to see. Change the room's lighting, let the afternoon
-sun move, or nudge the camera a few centimeters, and the policy that looked
-great in the lab falls apart.
+through hundreds of pick-and-place episodes is slow, and a policy trained on those
+clips tends to latch onto the exact lighting, background, and camera framing it
+happened to see. Change the room's lighting, let the afternoon sun move, or nudge
+the camera a few centimeters, and the policy that looked great in the lab falls
+apart. LMFAO gets more out of the demos you already recorded — a more robust
+policy without more hours on the robot, a second camera rig, or a GPU.
 
-LMFAO gets more out of the demonstrations you already recorded. It turns each
-clip into many varied training examples (relit, partially occluded, re-cropped,
-and so on), so your policy learns the task instead of memorizing the scene. You
-get a more robust policy without more hours on the robot, a second camera rig, or
-a GPU: the augmentations are cheap, run on CPU, and work on the data you already
-have.
+## The CLI
 
-## Why it helps
+| command | what it does |
+| --- | --- |
+| **`lmfao`** | interactive wizard — paste a dataset link, pick effects, run. No flags to remember. |
+| **`lmfao augment`** | season real footage at native resolution into many training variants (the trainable output). Magnitude sweeps, `--variants`, and crash-safe `--resume` for large runs. |
+| **`lmfao inspect`** | summarize any LeRobot dataset — episodes, camera streams, tasks, missing shards — without decoding video. |
+| **`lmfao generate`** | *experimental* — synthesize novel-camera-view episodes (low-res reference renderer). |
 
-- **More data from the same demos.** One recorded episode becomes many training
-  clips, so you spend less time teleoperating and more time training.
-- **Policies that survive the real world.** Randomized lighting, occlusion, and
-  framing stop a policy from overfitting to the one scene it was recorded in.
-- **Cheap and reproducible.** Runs on CPU, seeded end to end. Shape and
-  dtype are preserved and every applied augmentation is recorded in metadata, so
-  augmented clips drop straight back into training and stay auditable.
-- **Modular by design.** Every effect is an independent plug-in. Add or swap one
-  without touching the pipeline or anyone else's feature.
+There's also a browser demo under [`web/`](web/) for previewing augmentations and
+exporting a CLI job config.
+
+Everything runs on CPU, is seeded end to end, and records every applied
+augmentation in the dataset's metadata, so augmented clips drop straight back into
+training and stay auditable.
 
 ## Install
 
@@ -37,63 +41,55 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev,lerobot]"
 ```
 
-The core library is numpy-only. The `lerobot` extra adds `pyarrow` and `av` so
-the CLI can read and write real LeRobot v3 datasets (video shards + parquet).
+The core library is numpy-only. The `lerobot` extra adds `pyarrow` and `av` so the
+CLI can read and write real LeRobot v3 datasets (video shards + parquet).
 
-## Quickstart: the `lmfao` CLI
+## Quickstart
 
-New here? Just run the wizard and paste your dataset link:
+New here? Run the wizard and paste your dataset link:
 
 ```bash
 lmfao
 ```
 
 It asks where your data is (a Hugging Face link like
-`https://huggingface.co/datasets/owner/name`, a local folder, or the built-in
-demo), what you want to do, and which augmentations to apply, then runs it. No
-flags to remember. The flag-driven commands below are the same thing for scripts.
-
-The CLI is native to the LeRobot v3 on-disk format. Point it at any dataset
-recorded with LeRobot (or downloaded from the Hugging Face hub):
+`https://huggingface.co/datasets/owner/name`, a local folder, or a built-in demo),
+what you want to do, and which effects to apply — including a **magnitude sweep**
+that turns "brightness, 3 steps" into ±5% / ±10% / ±15% variants and shows the
+projected video count before it runs. The flag commands below do the same thing
+for scripts.
 
 ```bash
 # What is in this dataset? (episodes, camera streams, tasks, missing shards)
-lmfao inspect ~/data/my_teleop_dataset --episodes
+lmfao inspect ~/data/my_dataset --episodes
 
-# Augment real footage at native resolution (recommended, trainable output):
-# 3 independently-seasoned copies of every episode
-lmfao augment --input ~/data/my_dataset --output out/aug --config pipeline.json --variants 3
+# Augment real footage at native resolution — 3 seasoned copies of every episode
+lmfao augment --input ~/data/my_dataset --output out/aug \
+    --config pipeline.json --variants 3
 
-# Try the whole GENERATE + ADJUST flow with zero setup (built-in toy scene)
-lmfao generate --demo --output out/demo --config config.json
-
-# Augment a real dataset: 2 synthetic novel-view episodes per real episode,
-# plus lighting seasoning, written back out as a LeRobot dataset
-lmfao generate --input ~/data/my_teleop_dataset --output out/augmented \
-    --config config.json --assume-poses --seed 7
+# Large run? --resume checkpoints after each source episode so a crash continues
+lmfao augment --input ~/data/big_dataset --output out/aug \
+    --config pipeline.json --variants 14 --resume
 ```
 
-where `config.json` combines the miniworld (GENERATE) and pipeline (ADJUST)
-halves:
+`pipeline.json` is the list of augmentation steps to apply:
 
 ```json
-{
-  "miniworld": {"enabled": true, "n_synthetic": 2, "seed": 7},
-  "pipeline": [{"name": "lighting.brightness", "params": {}, "probability": 1.0}]
-}
+[
+  {"name": "lighting.brightness", "params": {}, "probability": 1.0},
+  {"name": "lighting.color_temperature", "params": {}, "probability": 1.0},
+  {"name": "noise.gaussian", "params": {"sigma": 0.03}, "probability": 1.0}
+]
 ```
 
-Configs are validated before any data is loaded, so typos fail in milliseconds
-with a one-line error. Synthetic episodes are stamped in a
+Configs are validated before any data is loaded, so a typo fails in milliseconds
+with a one-line error. Augmented episodes are stamped in a
 `meta/lmfao_provenance.json` sidecar, so they stay distinguishable from real
-footage on read-back (`lmfao inspect` shows the split). LeRobot datasets carry
-no camera poses; `--assume-poses` attaches an approximate arc so the reference
-renderer can generate novel views (`--work-size` controls its working
-resolution, default 96 px).
+footage on read-back (`lmfao inspect` shows the split). Augmentation runs at the
+footage's native resolution and streams one episode at a time, so a large run
+never has to hold the whole dataset in memory.
 
-## Available augmentations
-
-Shipping today:
+## Augmentations
 
 - **lighting:** `lighting.brightness`, `lighting.contrast`,
   `lighting.color_temperature`
@@ -102,11 +98,7 @@ Shipping today:
   `occlusion.moving_box`
 - **spatial:** `spatial.random_crop`
 
-Noise draws its random numbers on a GPU when one happens to be available, which
-is roughly 30x faster than NumPy. Nothing changes at the call site and no GPU is
-required.
-
-Further effects are on the way. To list exactly what is registered in your
+Each is an independent plug-in. To list exactly what is registered in your
 install:
 
 ```python
@@ -116,11 +108,11 @@ for feature in list_augmenter_info():
     print(feature.name, feature.tags, feature.description)
 ```
 
-## Basic usage
+## Using LMFAO as a library
 
-A clip is a NumPy array of shape `(frames, height, width, channels)`, the same
-layout a LeRobot dataset decodes to. In practice it comes from a recorded
-dataset; here we fake one.
+The CLI is the primary interface, but the pipeline is a plain Python API too. A
+clip is a NumPy array of shape `(frames, height, width, channels)` — the same
+layout a LeRobot dataset decodes to; here we fake one.
 
 ```python
 import numpy as np
