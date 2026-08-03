@@ -38,7 +38,11 @@ class BrightnessScale(Augmenter):
 
     def apply(self, video: Video, metadata: Metadata, rng: np.random.Generator) -> tuple[Video, Metadata]:
         factor = sample_range(self.factor, self.min_factor, self.max_factor, rng)
-        augmented = preserve_dtype(video, video.astype(np.float32, copy=True) * factor)
+        # In-place scaling keeps a single float32 buffer alive instead of two;
+        # on a full 720p episode the extra copy is ~11 GB. Result is identical.
+        buffer = video.astype(np.float32, copy=True)
+        buffer *= factor
+        augmented = preserve_dtype(video, buffer)
 
         metadata.setdefault("augmentation_params", {})[self.name] = metadata_params(
             {

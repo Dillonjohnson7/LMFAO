@@ -40,7 +40,13 @@ class ContrastScale(Augmenter):
         factor = sample_range(self.factor, self.min_factor, self.max_factor, rng)
         pivot = _mid_gray(video)
 
-        adjusted = (video.astype(np.float32, copy=True) - pivot) * factor + pivot
+        # In-place arithmetic holds one float32 buffer instead of the three the
+        # (v - pivot) * factor + pivot expression would allocate (~11 GB each on
+        # a full 720p episode). Numerically identical.
+        adjusted = video.astype(np.float32, copy=True)
+        adjusted -= pivot
+        adjusted *= factor
+        adjusted += pivot
         augmented = preserve_dtype(video, adjusted)
 
         metadata.setdefault("augmentation_params", {})[self.name] = metadata_params(
