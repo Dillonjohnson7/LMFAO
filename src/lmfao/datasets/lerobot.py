@@ -574,3 +574,195 @@ def write_lerobot_dataset(
     )
     return root
 
+
+# ---------------------------------------------------------------- streaming write
+
+
+class LeRobotStreamingWriter:
+    """Write a LeRobot dataset one episode at a time (bounded memory + resumable).
+
+    Each episode is its own video + data file (``file_index`` increments), a valid
+    v3 layout that :func:`read_lerobot_dataset` reads via each record's per-episode
+    ranges. Unlike :func:`write_lerobot_dataset` (which concatenates every frame
+    into one in-memory shard), this holds only the current episode's frames, so a
+    45x14 run of 720p footage never materializes the whole dataset at once.
+
+    ``state_dict`` / ``load_state_dict`` capture everything needed to ``close()``
+    after a restart, so a caller can checkpoint after each source episode and
+    ``--resume`` a killed run. All of :func:`write_lerobot_dataset`'s guards apply.
+    """
+
+    def __init__(
+        self,
+        root: str | Path,
+        *,
+        video_key: str,
+        fps: float,
+        state_dim: int,
+        action_dim: int,
+        codec_note: str = "h264",
+        video_preset: str = "veryfast",
+    ) -> None:
+        self._pq, self._av = _require_deps()
+        self.root = Path(root)
+        self.video_key = video_key
+        self.fps = float(fps)
+        self.state_dim = int(state_dim)
+        self.action_dim = int(action_dim)
+        self.codec_note = codec_note
+        self.video_preset = video_preset
+        if not (self.fps > 0):
+            raise ValueError(f"fps must be positive, got {fps}")
+        self._rows: list[dict] = []
+        self._tasks: list[str] = []
+        self._task_index: dict[str, int] = {}
+        self._provenance: list[dict] = []
+        self._global_index = 0
+        self._h: int | None = None
+        self._w: int | None = None
+
+    @property
+    def episodes_written(self) -> int:
+        return len(self._rows)
+
+    def state_dict(self) -> dict:
+        return {
+            "rows": self._rows, "tasks": self._tasks, "task_index": self._task_index,
+            "provenance": self._provenance, "global_index": self._global_index,
+            "h": self._h, "w": self._w,
+            "video_key": self.video_key, "fps": self.fps,
+            "state_dim": self.state_dim, "action_dim": self.action_dim,
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        self._rows = state["rows"]
+        self._tasks = state["tasks"]
+        self._task_index = state["task_index"]
+        self._provenance = state["provenance"]
+        self._global_index = state["global_index"]
+        self._h, self._w = state["h"], state["w"]
+
+    def add_episode(self, ep: Episode) -> int:
+        import pyarrow as pa
+
+        frames = _to_uint8_rgb(ep.frames)
+        n = int(frames.shape[0])
+        if n == 0:
+            raise ValueError("refusing to write a zero-frame episode")
+        h, w = int(frames.shape[1]), int(frames.shape[2])
+        if h % 2 or w % 2:
+            raise ValueError(
+                f"frame size {w}x{h} is not encodable: libx264/yuv420p needs even "
+                "width and height."
+            )
+        if self._h is None:
+            self._h, self._w = h, w
+        elif (h, w) != (self._h, self._w):
+            raise ValueError(
+                f"episode {len(self._rows)} is {w}x{h} but the dataset is {self._w}x{self._h}; "
+                "all episodes must share geometry"
+            )
+        if abs(float(ep.fps) - self.fps) > 1e-6:
+            raise ValueError(f"episode fps {ep.fps} differs from the dataset fps {self.fps}")
+        if (ep.state is not None) != (self.state_dim > 0):
+            raise ValueError("episode state presence disagrees with the dataset (would fabricate zeros)")
+        if ep.state is not None and ep.state.shape[1] != self.state_dim:
+            raise ValueError(f"episode state dim {ep.state.shape[1]} != dataset {self.state_dim}")
+        if ep.actions is not None and ep.actions.shape[1] != self.action_dim:
+            raise ValueError(f"episode action dim {ep.actions.shape[1]} != dataset {self.action_dim}")
+
+        ei = len(self._rows)
+        if ep.task not in self._task_index:
+            self._task_index[ep.task] = len(self._tasks)
+            self._tasks.append(ep.task)
+        tindex = self._task_index[ep.task]
+
+        # video first (most likely to fail); one file per episode.
+        vpath = self.root / "videos" / self.video_key / "chunk-000" / f"file-{ei:03d}.mp4"
+        _encode_video(self._av, vpath, frames, self.fps, preset=self.video_preset)
+
+        states = [
+            list(map(float, ep.state[f])) if ep.state is not None else [0.0] * self.state_dim
+            for f in range(n)
+        ]
+        actions = [
+            list(map(float, ep.actions[f])) if ep.actions is not None else [0.0] * self.action_dim
+            for f in range(n)
+        ]
+        table = pa.table({
+            "observation.state": pa.array(states, type=pa.list_(pa.float32())),
+            "action": pa.array(actions, type=pa.list_(pa.float32())),
+            "timestamp": pa.array([f / self.fps for f in range(n)], type=pa.float32()),
+            "frame_index": pa.array(list(range(n)), type=pa.int64()),
+            "episode_index": pa.array([ei] * n, type=pa.int64()),
+            "index": pa.array(list(range(self._global_index, self._global_index + n)), type=pa.int64()),
+            "task_index": pa.array([tindex] * n, type=pa.int64()),
+        })
+        dpath = self.root / "data" / "chunk-000" / f"file-{ei:03d}.parquet"
+        dpath.parent.mkdir(parents=True, exist_ok=True)
+        self._pq.write_table(table, dpath)
+
+        self._rows.append({
+            "episode_index": ei,
+            "tasks": [ep.task],
+            "length": n,
+            "data/chunk_index": 0,
+            "data/file_index": ei,
+            "dataset_from_index": self._global_index,
+            "dataset_to_index": self._global_index + n,
+            f"videos/{self.video_key}/chunk_index": 0,
+            f"videos/{self.video_key}/file_index": ei,
+            f"videos/{self.video_key}/from_timestamp": 0.0,
+            f"videos/{self.video_key}/to_timestamp": n / self.fps,
+        })
+        reader_owned = {"episode_index", "source_dataset", "video_key"}
+        self._provenance.append({k: v for k, v in ep.metadata.items() if k not in reader_owned})
+        self._global_index += n
+        return ei
+
+    def close(self) -> Path:
+        import pyarrow as pa
+
+        if not self._rows:
+            raise ValueError("no episodes were written")
+        info = {
+            "codebase_version": "v3.0",
+            "robot_type": "lmfao_synthetic",
+            "total_episodes": len(self._rows),
+            "total_frames": int(self._global_index),
+            "total_tasks": len(self._tasks),
+            "chunks_size": 1000,
+            "fps": self.fps,
+            "data_path": "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet",
+            "video_path": "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4",
+            "features": {
+                "observation.state": {"dtype": "float32", "shape": [self.state_dim]},
+                "action": {"dtype": "float32", "shape": [self.action_dim]},
+                self.video_key: {
+                    "dtype": "video",
+                    "shape": [self._h, self._w, 3],
+                    "names": ["height", "width", "channels"],
+                    "info": {
+                        "video.height": self._h, "video.width": self._w,
+                        "video.codec": self.codec_note, "video.fps": self.fps,
+                        "video.channels": 3,
+                    },
+                },
+            },
+        }
+        (self.root / "meta").mkdir(parents=True, exist_ok=True)
+        (self.root / "meta" / "info.json").write_text(json.dumps(info, indent=1))
+
+        ep_cols = {k: [r[k] for r in self._rows] for k in self._rows[0]}
+        epath = self.root / "meta" / "episodes" / "chunk-000" / "file-000.parquet"
+        epath.parent.mkdir(parents=True, exist_ok=True)
+        self._pq.write_table(pa.table(ep_cols), epath)
+        self._pq.write_table(
+            pa.table({"task_index": list(range(len(self._tasks))), "task": self._tasks}),
+            self.root / "meta" / "tasks.parquet",
+        )
+        (self.root / "meta" / "lmfao_provenance.json").write_text(
+            json.dumps(self._provenance, indent=1, default=_json_default)
+        )
+        return self.root
+

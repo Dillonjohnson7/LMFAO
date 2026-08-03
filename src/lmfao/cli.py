@@ -38,6 +38,7 @@ from pathlib import Path
 import numpy as np
 
 from lmfao.datasets import Episode, read_lerobot_dataset, write_lerobot_dataset
+from lmfao.datasets.lerobot import LeRobotStreamingWriter
 from lmfao.datasets.poses import assume_camera_track
 from lmfao.miniworld import MiniWorldConfig, default_intrinsics, look_at
 from lmfao.pipeline import AugmentationPipeline
@@ -196,6 +197,21 @@ def _miniworld_cfg(config: dict) -> MiniWorldConfig:
     return MiniWorldConfig.from_dict(block) if block else MiniWorldConfig(enabled=False)
 
 
+def _job_signature(mode: str, payload: list, args: argparse.Namespace) -> str:
+    """Stable hash of the run config, so --resume refuses to continue a run whose
+    parameters changed (which would produce an inconsistent dataset)."""
+    import hashlib
+
+    key = json.dumps({
+        "mode": mode, "payload": payload, "seed": args.seed,
+        "variants": args.variants, "include_original": args.include_original,
+        "video_key": args.video_key, "write_video_key": args.write_video_key,
+        "max_frames": args.max_frames, "limit": args.limit, "demo": args.demo,
+        "input": args.input,
+    }, sort_keys=True, default=str)
+    return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
 def _augment(args: argparse.Namespace) -> int:
     if args.seed is not None and args.seed < 0:
         raise CliError("--seed must be non-negative")
@@ -207,58 +223,126 @@ def _augment(args: argparse.Namespace) -> int:
         raise CliError("--variants must be at least 1")
 
     mode, payload = _load_augment_config(args.config)
-
+    resume = getattr(args, "resume", False)
     out = Path(args.output)
-    if (out / "meta" / "info.json").exists() and not args.overwrite:
-        raise CliError(f"{out} already contains a dataset; pass --overwrite to replace it")
+    ckpt = out / ".lmfao_resume.pkl"
+    sig = _job_signature(mode, payload, args)
 
+    # --- resolve the source episodes as a lazy per-index reader (bounded memory) ---
     if args.demo:
-        real = _demo_episodes()
-        print(f"loaded {len(real)} demo episodes (toy pick_place scene)")
+        demo = _demo_episodes()
+        n_source = len(demo)
+        def get_source(k: int) -> Episode:
+            return demo[k]
+        source_desc = f"{n_source} demo episodes (toy pick_place scene)"
     else:
         if not args.input:
             raise CliError("--input <lerobot-dataset> is required (or use --demo)")
         try:
-            real = read_lerobot_dataset(
-                args.input, video_key=args.video_key, limit=args.limit,
-                max_frames=args.max_frames,
-            )
-        except (OSError, ValueError) as e:
+            import pyarrow.parquet as pq
+
+            from lmfao.datasets.lerobot import _episode_records
+            recs = _episode_records(Path(args.input), pq)
+        except (OSError, ValueError, KeyError) as e:
             raise CliError(f"cannot read {args.input}: {e}") from e
-        print(f"loaded {len(real)} episodes from {args.input}")
-    if not real:
+        indices = [int(r["episode_index"]) for r in recs]
+        if args.limit is not None:
+            indices = indices[: args.limit]
+        n_source = len(indices)
+        def get_source(k: int) -> Episode:
+            return read_lerobot_dataset(
+                args.input, video_key=args.video_key, episodes=[indices[k]],
+                max_frames=args.max_frames,
+            )[0]
+        source_desc = f"{n_source} episodes from {args.input}"
+    if n_source == 0:
         raise CliError("no episodes loaded; nothing to do")
 
-    # Augment keeps native resolution — this is real footage, just seasoned — so
-    # there is no downscale step here (that is a GENERATE-only concern).
-    origins = " + originals" if args.include_original else ""
-    try:
-        if mode == "sweep":
-            result = sweep_episodes(
-                real, payload, seed=args.seed, include_original=args.include_original,
+    # --- resume / overwrite handling ---
+    writer = None
+    start = 0
+    if resume and ckpt.exists():
+        import pickle
+        try:
+            saved = pickle.loads(ckpt.read_bytes())
+        except Exception as e:  # noqa: BLE001
+            raise CliError(f"cannot read resume checkpoint {ckpt}: {e}") from e
+        if saved.get("sig") != sig:
+            raise CliError(
+                "cannot --resume: the checkpoint was written for a different run "
+                "(seed/config/cameras changed). Use a fresh --output or drop --resume."
             )
-            desc = f"swept {len(real)} source episode(s) x {len(payload)} step(s){origins}"
-        else:
-            result = augment_episodes(
-                real, payload, variants=args.variants, seed=args.seed,
-                include_original=args.include_original,
-            )
-            steps = ", ".join(s.get("name", "?") for s in payload)
-            desc = (f"augmented {len(real)} source episode(s) x {args.variants} variant(s)"
-                    f"{origins}; steps: {steps}")
-    except (ValueError, TypeError, KeyError) as e:
-        raise CliError(f"augmentation failed: {e}") from e
+        first = get_source(0)
+        writer = _new_writer(out, args, first)
+        writer.load_state_dict(saved["writer"])
+        start = int(saved["source_done"])
+        print(f"resuming: {start}/{n_source} source episodes already done")
+    else:
+        if (out / "meta" / "info.json").exists() and not args.overwrite:
+            raise CliError(f"{out} already contains a dataset; pass --overwrite to replace it")
+        _clear_dataset(out)
+        first = get_source(0)
+        writer = _new_writer(out, args, first)
 
-    # Keep the source camera's key so the output is a drop-in seasoned copy.
-    write_key = args.write_video_key or real[0].metadata.get("video_key") or "observation.images.augmented"
+    # --- stream: one source at a time -> its variants -> checkpoint ---
+    generate = (
+        (lambda ep, k: sweep_episodes(
+            [ep], payload, seed=args.seed, include_original=args.include_original, index_base=k))
+        if mode == "sweep"
+        else (lambda ep, k: augment_episodes(
+            [ep], payload, variants=args.variants, seed=args.seed,
+            include_original=args.include_original, index_base=k))
+    )
     try:
-        write_lerobot_dataset(result.episodes, out, video_key=write_key)
-    except (OSError, ValueError) as e:
-        raise CliError(f"cannot write {out}: {e}") from e
+        for k in range(start, n_source):
+            ep = first if k == 0 else get_source(k)
+            for produced in generate(ep, k).episodes:
+                writer.add_episode(produced)
+            if resume:
+                _checkpoint(ckpt, sig, k + 1, writer)
+        writer.close()
+    except (OSError, ValueError, TypeError, KeyError) as e:
+        hint = "" if resume else " (re-run with --resume to make long runs crash-safe)"
+        raise CliError(f"augmentation failed: {e}{hint}") from e
+    if ckpt.exists():
+        ckpt.unlink()
 
+    if mode == "sweep":
+        desc = f"swept {n_source} source episode(s) x {len(payload)} step(s)"
+    else:
+        steps = ", ".join(s.get("name", "?") for s in payload)
+        desc = f"augmented {n_source} source episode(s) x {args.variants} variant(s); steps: {steps}"
+    if args.include_original:
+        desc += " + originals"
+    print(f"loaded {source_desc}")
     print(desc)
-    print(f"wrote {len(result.episodes)} episodes -> {out}")
+    print(f"wrote {writer.episodes_written} episodes -> {out}")
     return 0
+
+
+def _new_writer(out: Path, args: argparse.Namespace, first: Episode) -> LeRobotStreamingWriter:
+    write_key = args.write_video_key or first.metadata.get("video_key") or "observation.images.augmented"
+    state_dim = first.state.shape[1] if first.state is not None else 0
+    action_dim = first.actions.shape[1] if first.actions is not None else 0
+    return LeRobotStreamingWriter(
+        out, video_key=write_key, fps=first.fps, state_dim=state_dim, action_dim=action_dim,
+    )
+
+
+def _checkpoint(ckpt: Path, sig: str, source_done: int, writer: LeRobotStreamingWriter) -> None:
+    import pickle
+    ckpt.parent.mkdir(parents=True, exist_ok=True)
+    tmp = ckpt.with_suffix(".pkl.tmp")
+    tmp.write_bytes(pickle.dumps({"sig": sig, "source_done": source_done, "writer": writer.state_dict()}))
+    tmp.replace(ckpt)  # atomic: a crash mid-write can't corrupt the checkpoint
+
+
+def _clear_dataset(out: Path) -> None:
+    import shutil
+    for sub in ("data", "videos", "meta"):
+        p = out / sub
+        if p.exists():
+            shutil.rmtree(p)
 
 
 def _generate(args: argparse.Namespace) -> int:
@@ -440,6 +524,8 @@ def build_parser() -> argparse.ArgumentParser:
     aug.add_argument("--max-frames", type=int, default=None, help="truncate each episode to N frames")
     aug.add_argument("--overwrite", action="store_true",
                      help="replace an existing dataset at --output instead of erroring")
+    aug.add_argument("--resume", action="store_true",
+                     help="checkpoint after each source episode so a killed run can continue")
     aug.set_defaults(func=_augment)
 
     gen = sub.add_parser("generate", help="generate a training set (miniworld + pipeline)")

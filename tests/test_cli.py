@@ -183,6 +183,74 @@ def test_augment_rejects_bad_variants(tmp_path, capsys):
     assert "variants" in capsys.readouterr().err
 
 
+def _sweep_cfg(tmp_path):
+    cfg = tmp_path / "sweep.json"
+    cfg.write_text(json.dumps({"sweep": [
+        {"label": "b+10", "pipeline": [{"name": "lighting.brightness", "params": {"factor": 1.1}}]},
+        {"label": "b-10", "pipeline": [{"name": "lighting.brightness", "params": {"factor": 0.9}}]},
+    ]}))
+    return cfg
+
+
+def test_augment_resume_finishes_and_matches_clean_run(tmp_path, monkeypatch):
+    import numpy as np
+
+    import lmfao.cli as climod
+    cfg = _sweep_cfg(tmp_path)
+
+    full = tmp_path / "full"
+    assert main(["augment", "--demo", "--config", str(cfg), "--seed", "7", "--output", str(full)]) == 0
+    ref = read_lerobot_dataset(full)
+
+    # crash after the 2nd source episode's checkpoint
+    part = tmp_path / "part"
+    real_ckpt = climod._checkpoint
+
+    def crashing(ckpt, sig, done, writer):
+        real_ckpt(ckpt, sig, done, writer)
+        if done == 2:
+            raise KeyboardInterrupt("simulated crash")
+
+    monkeypatch.setattr(climod, "_checkpoint", crashing)
+    with pytest.raises(KeyboardInterrupt):
+        main(["augment", "--demo", "--config", str(cfg), "--seed", "7", "--output", str(part), "--resume"])
+    monkeypatch.setattr(climod, "_checkpoint", real_ckpt)
+
+    assert (part / ".lmfao_resume.pkl").exists()
+    assert not (part / "meta" / "info.json").exists()  # not finalized
+
+    # resume finishes and yields a dataset identical to the clean run
+    assert main(["augment", "--demo", "--config", str(cfg), "--seed", "7", "--output", str(part), "--resume"]) == 0
+    resumed = read_lerobot_dataset(part)
+    assert not (part / ".lmfao_resume.pkl").exists()  # cleaned up
+    assert len(resumed) == len(ref) == 6
+    for a, b in zip(ref, resumed):
+        assert np.array_equal(a.frames, b.frames)
+        assert a.metadata.get("sweep") == b.metadata.get("sweep")
+
+
+def test_augment_resume_refuses_mismatched_config(tmp_path, monkeypatch):
+    import lmfao.cli as climod
+    cfg = _sweep_cfg(tmp_path)
+    part = tmp_path / "part"
+
+    # write a real checkpoint then crash before finalizing
+    real_ckpt = climod._checkpoint
+
+    def crashing(ckpt, sig, done, writer):
+        real_ckpt(ckpt, sig, done, writer)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(climod, "_checkpoint", crashing)
+    with pytest.raises(KeyboardInterrupt):
+        main(["augment", "--demo", "--config", str(cfg), "--seed", "7", "--output", str(part), "--resume"])
+    monkeypatch.setattr(climod, "_checkpoint", real_ckpt)
+
+    # resume with a DIFFERENT seed -> refused
+    rc = main(["augment", "--demo", "--config", str(cfg), "--seed", "999", "--output", str(part), "--resume"])
+    assert rc == 2
+
+
 def test_augment_sweep_config_produces_one_output_per_spec(tmp_path):
     cfg = tmp_path / "sweep.json"
     cfg.write_text(json.dumps({"sweep": [

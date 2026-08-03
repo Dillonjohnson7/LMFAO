@@ -121,6 +121,7 @@ def augment_episodes(
     variants: int = 1,
     seed: int | None = None,
     include_original: bool = False,
+    index_base: int = 0,
 ) -> TrainingSet:
     """Apply the ADJUST pixel pipeline to real episodes (no miniworld synthesis).
 
@@ -137,8 +138,12 @@ def augment_episodes(
     seed:
         Base seed; each (variant, episode) pair gets a disjoint derived stream.
     include_original:
-        When True, the un-augmented source episodes are emitted first (stamped
-        ``augmented=False``) so the output is originals + augmented variants.
+        When True, each source's un-augmented frames are emitted (stamped
+        ``augmented=False``) before its variants.
+    index_base:
+        Global index of the first episode in ``episodes``. Lets a caller process
+        sources one at a time (streaming) and still derive the same per-episode
+        seeds as one in-memory call over the whole list.
     """
     if variants < 1:
         raise ValueError("variants must be >= 1")
@@ -148,21 +153,20 @@ def augment_episodes(
 
     eps = list(episodes)
     out: list[Episode] = []
-    if include_original:
-        for ep in eps:
+    for i, ep in enumerate(eps):
+        gi = index_base + i
+        if include_original:
             keep = ep.with_frames(ep.frames)
             keep.metadata["augmented"] = False
             out.append(keep)
-    for v in range(variants):
-        for i, ep in enumerate(eps):
-            # A distinct index per (variant, episode) so no two seasonings share
-            # an RNG stream, even across variants.
-            derived = _derive_seed(seed, v * len(eps) + i)
-            aug = _season(ep, steps, derived)
+        for v in range(variants):
+            # A distinct index per (source, variant) so no two seasonings share an
+            # RNG stream; global source index keeps streaming == in-memory.
+            aug = _season(ep, steps, _derive_seed(seed, gi * variants + v))
             aug.metadata["augmented"] = True
             if variants > 1:
                 aug.metadata["variant"] = int(v)
-                aug.metadata["source_episode"] = int(i)
+                aug.metadata["source_episode"] = int(gi)
             out.append(aug)
     return TrainingSet(episodes=out)
 
@@ -173,6 +177,7 @@ def sweep_episodes(
     *,
     seed: int | None = None,
     include_original: bool = False,
+    index_base: int = 0,
 ) -> TrainingSet:
     """Deterministic magnitude sweep: apply each named single-effect pipeline in
     ``specs`` to every episode, producing one output per (episode, spec).
@@ -181,27 +186,30 @@ def sweep_episodes(
     usually a single augmenter at a fixed magnitude (e.g. brightness +10%). Unlike
     :func:`augment_episodes` (which reseeds the whole pipeline), this isolates one
     effect at one magnitude per output, so the output grid is interpretable.
+
+    ``index_base`` is the global index of the first episode, so a streaming caller
+    that processes sources one at a time derives the same seeds as one bulk call.
     """
     steps = list(specs)
     if not steps:
         raise ValueError("no sweep steps configured")
     eps = list(episodes)
     out: list[Episode] = []
-    if include_original:
-        for ep in eps:
+    for i, ep in enumerate(eps):
+        gi = index_base + i
+        if include_original:
             keep = ep.with_frames(ep.frames)
             keep.metadata["augmented"] = False
             out.append(keep)
-    for i, ep in enumerate(eps):
         for j, spec in enumerate(steps):
             pipe = list(spec.get("pipeline") or [])
             if not pipe:
                 raise ValueError(f"sweep step {spec.get('label', '?')!r} has an empty pipeline")
-            aug = _season(ep, pipe, _derive_seed(seed, i * len(steps) + j))
+            aug = _season(ep, pipe, _derive_seed(seed, gi * len(steps) + j))
             aug.metadata["augmented"] = True
             if spec.get("label"):
                 aug.metadata["sweep"] = spec["label"]
-            aug.metadata["source_episode"] = int(i)
+            aug.metadata["source_episode"] = int(gi)
             out.append(aug)
     return TrainingSet(episodes=out)
 

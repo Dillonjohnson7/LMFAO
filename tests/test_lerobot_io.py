@@ -5,6 +5,7 @@ pytest.importorskip("pyarrow")
 pytest.importorskip("av")
 
 from lmfao.datasets import Episode, read_lerobot_dataset, write_lerobot_dataset
+from lmfao.datasets.lerobot import LeRobotStreamingWriter
 
 
 def _episode(task="pick", frames=6, size=32, synthetic=False):
@@ -220,3 +221,34 @@ def test_negative_limit_rejected(tmp_path):
     write_lerobot_dataset([_episode(), _episode()], tmp_path)
     with pytest.raises(ValueError, match="non-negative"):
         read_lerobot_dataset(tmp_path, limit=-1)
+
+
+def test_streaming_writer_round_trip(tmp_path):
+    eps = [_episode(task=f"t{i}", synthetic=(i > 0)) for i in range(3)]
+    w = LeRobotStreamingWriter(tmp_path, video_key="observation.images.wrist",
+                               fps=30.0, state_dim=eps[0].state.shape[1], action_dim=eps[0].actions.shape[1])
+    for ep in eps:
+        w.add_episode(ep)
+    w.close()
+    # one file per episode (not a single concatenated shard)
+    assert sorted(p.name for p in (tmp_path / "data" / "chunk-000").glob("*.parquet")) == \
+        ["file-000.parquet", "file-001.parquet", "file-002.parquet"]
+    back = read_lerobot_dataset(tmp_path)
+    assert len(back) == 3
+    assert [e.metadata["episode_index"] for e in back] == [0, 1, 2]
+    assert [e.is_synthetic for e in back] == [False, True, True]
+    assert all(e.state is not None for e in back)
+
+
+def test_streaming_writer_none_state_round_trips(tmp_path):
+    w = LeRobotStreamingWriter(tmp_path, video_key="v", fps=30.0, state_dim=0, action_dim=0)
+    w.add_episode(Episode(frames=np.zeros((4, 16, 16, 3), np.uint8), fps=30.0))
+    w.close()
+    assert read_lerobot_dataset(tmp_path)[0].state is None
+
+
+def test_streaming_writer_rejects_inconsistent_geometry(tmp_path):
+    w = LeRobotStreamingWriter(tmp_path, video_key="v", fps=30.0, state_dim=0, action_dim=0)
+    w.add_episode(Episode(frames=np.zeros((4, 16, 16, 3), np.uint8), fps=30.0))
+    with pytest.raises(ValueError, match="geometry"):
+        w.add_episode(Episode(frames=np.zeros((4, 32, 32, 3), np.uint8), fps=30.0))
