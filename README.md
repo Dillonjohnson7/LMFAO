@@ -1,12 +1,12 @@
 # LMFAO
 
-**A command-line tool for augmenting robot-learning datasets.** Point `lmfao` at a
+**Lightweight Modular Feature-Based Augmentation Operation.**
+
+A command-line tool for augmenting robot-learning datasets. Point `lmfao` at a
 [LeRobot](https://github.com/huggingface/lerobot) v3 dataset — a local folder or a
 Hugging Face link — and it turns each recorded episode into many varied training
 clips (relit, noised, occluded, re-cropped) and writes them back out as a
 ready-to-train LeRobot dataset.
-
-*LMFAO = Lightweight Modular Feature-Based Augmentation Operation.*
 
 Collecting robot demonstrations is the expensive part. Teleoperating an arm
 through hundreds of pick-and-place episodes is slow, and a policy trained on those
