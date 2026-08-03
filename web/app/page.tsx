@@ -29,6 +29,10 @@ export default function Page() {
       <main className="clean-main">
         <section className="clean-intro">
           <p className="clean-kicker">Data augmentation, watched not guessed</p>
+          <p className="clean-expansion">
+            <b>L</b>ightweight <b>M</b>odular <b>F</b>eature-based <b>A</b>ugmentation{" "}
+            <b>O</b>peration
+          </p>
           <h1 className="clean-title">
             See every augmentation on your footage before you commit it to a training run.
           </h1>

@@ -476,6 +476,20 @@ code {
   color: var(--muted);
   margin: 0 0 18px;
 }
+.clean-expansion {
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: clamp(30px, 5vw, 60px);
+  line-height: 1.08;
+  letter-spacing: -0.02em;
+  color: var(--muted);
+  margin: 0 0 20px;
+  text-wrap: balance;
+}
+.clean-expansion b {
+  font-weight: 700;
+  color: var(--ink);
+}
 .clean-title {
   font-family: var(--serif);
   font-weight: 600;
