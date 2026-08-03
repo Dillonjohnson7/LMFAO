@@ -11,6 +11,17 @@ def test_build_sweep_bidirectional_counts_and_magnitudes():
     assert mags == ["±5%", "±10%", "±15%"]
     factors = sorted(s["pipeline"][0]["params"]["factor"] for s in specs)
     assert factors == [0.85, 0.9, 0.95, 1.05, 1.1, 1.15]
+    labels = {s["label"] for s in specs}
+    assert "lighting.brightness +5% (brighter)" in labels
+    assert "lighting.brightness -5% (darker)" in labels
+
+
+def test_build_sweep_color_temperature_direction_words():
+    specs, _ = _build_sweep("lighting.color_temperature",
+                            _STEP_AUGS["lighting.color_temperature"], 1)
+    labels = {s["label"] for s in specs}
+    assert labels == {"lighting.color_temperature +0.2 (cooler)",
+                      "lighting.color_temperature -0.2 (warmer)"}
 
 
 def test_build_sweep_unidirectional_noise():
@@ -74,7 +85,8 @@ def test_wizard_drives_augment_on_demo(tmp_path, monkeypatch):
     # 3 demo episodes x (4 brightness + 2 color) = 18
     assert len(back) == 18
     assert all(e.metadata.get("augmented") for e in back)
-    assert {e.metadata["sweep"] for e in back} >= {"lighting.brightness +5%", "lighting.color_temperature +0.2"}
+    assert {e.metadata["sweep"] for e in back} >= {
+        "lighting.brightness +5% (brighter)", "lighting.color_temperature +0.2 (cooler)"}
 
 
 def test_wizard_cancels_cleanly_on_eof(monkeypatch):

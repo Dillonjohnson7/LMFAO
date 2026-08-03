@@ -175,13 +175,15 @@ def parse_hf_link(text: str) -> str | None:
 # Effects with a clean magnitude axis. Each step k adds inc*k to the base param.
 # Bidirectional effects emit both directions (+ and -) per step, so N steps => 2N
 # videos; magnitude-only effects (noise) emit N.
+# ``pos`` / ``neg`` name the direction of a + / - step so labels read plainly
+# (e.g. color temperature + is cooler, - is warmer, matching the augmenter).
 _STEP_AUGS: dict[str, dict] = {
     "lighting.brightness": dict(param="factor", base=1.0, inc=0.05, bidir=True, scale=100, unit="%",
-                                desc="brighter / darker"),
+                                pos="brighter", neg="darker", desc="brighter / darker"),
     "lighting.contrast": dict(param="factor", base=1.0, inc=0.10, bidir=True, scale=100, unit="%",
-                              desc="more / less contrast"),
+                              pos="more", neg="less", desc="more / less contrast"),
     "lighting.color_temperature": dict(param="shift", base=0.0, inc=0.2, bidir=True, scale=1, unit="",
-                                       desc="warmer / cooler"),
+                                       pos="cooler", neg="warmer", desc="cooler / warmer"),
     "noise.gaussian": dict(param="sigma", base=0.0, inc=0.02, bidir=False, scale=100, unit="%",
                            desc="sensor grain"),
     "noise.uniform": dict(param="amplitude", base=0.0, inc=0.02, bidir=False, scale=100, unit="%",
@@ -203,8 +205,8 @@ def _build_sweep(name: str, d: dict, n_steps: int) -> tuple[list[dict], list[str
         disp = f"{_fmt(mag * d['scale'])}{d['unit']}"
         mags.append(("±" if d["bidir"] else "") + disp)
         if d["bidir"]:
-            specs.append(_one(name, param, base + mag, f"+{disp}"))
-            specs.append(_one(name, param, base - mag, f"-{disp}"))
+            specs.append(_one(name, param, base + mag, f"+{disp} ({d['pos']})"))
+            specs.append(_one(name, param, base - mag, f"-{disp} ({d['neg']})"))
         else:
             specs.append(_one(name, param, base + mag, disp))
     return specs, mags
@@ -452,9 +454,10 @@ def run_wizard() -> int:
             print()
             print(_bold("  Projected output"))
             for name, nsteps, count, mags in rows:
-                bidir = _STEP_AUGS[name]["bidir"]
-                print(f"    {name:26} {nsteps} step(s){'  ±' if bidir else '   '}  "
-                      f"{_green(str(count))} videos/ep   {_dim(', '.join(mags))}")
+                d = _STEP_AUGS[name]
+                dir_note = _dim(f"  +{d['pos']} / -{d['neg']}") if d["bidir"] else ""
+                print(f"    {name:26} {nsteps} step(s){'  ±' if d['bidir'] else '   '}  "
+                      f"{_green(str(count))} videos/ep   {_dim(', '.join(mags))}{dir_note}")
             print(_dim(f"    {'─' * 60}"))
             total_line = f"    {per_ep} variations/episode"
             if n_ep is not None:
