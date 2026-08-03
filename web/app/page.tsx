@@ -13,9 +13,7 @@ export default function Page() {
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
 
   const selectedCount = s.selected.size;
-  // Only count real augmentations toward the job (the untouched original
-  // panel exports nothing).
-  const jobCount = s.tiles.filter((t) => s.selected.has(t.spec.id) && t.spec.family !== "original").length;
+  const jobCount = s.exportableCount;
 
   return (
     <div className="clean">

@@ -107,9 +107,9 @@ export default function SlopPage() {
               <button
                 className="btn tiny primary"
                 onClick={s.onExport}
-                disabled={s.selected.size === 0 || s.exporting}
+                disabled={s.exportableCount === 0 || s.exporting}
               >
-                {s.exporting ? "Exporting…" : `⬇ Export CLI job (${s.selected.size})`}
+                {s.exporting ? "Exporting…" : `⬇ Export CLI job (${s.exportableCount})`}
               </button>
             </div>
           </div>

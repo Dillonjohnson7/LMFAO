@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { buildTiles, type TileData } from "./pipeline";
 import { downloadBlob, exportJob } from "./exporter";
 import { parseLeRobotFolder, type LeRobotDataset } from "./lerobot";
@@ -94,6 +94,9 @@ export function useStudio() {
       setStartTime(performance.now());
       setStatus("ready");
     } catch (e) {
+      // A superseding run() already aborted us and owns the state now; any
+      // state write here would clobber the new run's setup.
+      if (abortRef.current !== controller) return;
       if (signal.aborted || (e as { name?: string })?.name === "AbortError") {
         // User cancelled: quietly return to the idle state.
         setStatus("idle");
@@ -107,6 +110,11 @@ export function useStudio() {
     } finally {
       if (abortRef.current === controller) abortRef.current = null;
     }
+  }, []);
+
+  // Stop any in-flight decode/augment loop when the page unmounts.
+  useEffect(() => {
+    return () => abortRef.current?.abort();
   }, []);
 
   const cancel = useCallback(() => {
@@ -222,8 +230,14 @@ export function useStudio() {
     run({ source: DEMO_SRC, name: "demo.mp4" });
   }, [run]);
 
+  // The untouched "original" tile has no pipeline config, so it can't be part
+  // of an exported job; the export button should count and gate on these.
+  const exportableCount = tiles.filter(
+    (t) => selected.has(t.spec.id) && t.spec.family !== "original"
+  ).length;
+
   const onExport = useCallback(async () => {
-    const chosen = tiles.filter((t) => selected.has(t.spec.id));
+    const chosen = tiles.filter((t) => selected.has(t.spec.id) && t.spec.family !== "original");
     if (chosen.length === 0) return;
     setExporting(true);
     try {
@@ -252,6 +266,7 @@ export function useStudio() {
     startTime,
     fileName,
     selected,
+    exportableCount,
     exporting,
     frameCount,
     frameDurationMs,
