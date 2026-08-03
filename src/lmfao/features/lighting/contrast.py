@@ -4,8 +4,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from lmfao.base import Augmenter, Metadata, Video, preserve_dtype
-from lmfao.features.lighting.utils import metadata_params, sample_range, validate_positive_range
+from lmfao.base import Augmenter, Metadata, Video
+from lmfao.features.lighting.utils import apply_pointwise, metadata_params, sample_range, validate_positive_range
 from lmfao.registry import register_augmenter
 
 
@@ -39,15 +39,7 @@ class ContrastScale(Augmenter):
     def apply(self, video: Video, metadata: Metadata, rng: np.random.Generator) -> tuple[Video, Metadata]:
         factor = sample_range(self.factor, self.min_factor, self.max_factor, rng)
         pivot = _mid_gray(video)
-
-        # In-place arithmetic holds one float32 buffer instead of the three the
-        # (v - pivot) * factor + pivot expression would allocate (~11 GB each on
-        # a full 720p episode). Numerically identical.
-        adjusted = video.astype(np.float32, copy=True)
-        adjusted -= pivot
-        adjusted *= factor
-        adjusted += pivot
-        augmented = preserve_dtype(video, adjusted)
+        augmented = apply_pointwise(video, lambda x: (x - pivot) * factor + pivot)
 
         metadata.setdefault("augmentation_params", {})[self.name] = metadata_params(
             {

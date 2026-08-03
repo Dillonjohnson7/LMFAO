@@ -128,3 +128,41 @@ def test_lighting_config_validation():
 
     with pytest.raises(ValueError, match="min_shift/max_shift"):
         build_augmenter("lighting.color_temperature", min_shift=0.5, max_shift=-0.5)
+
+
+def _ref_float(video, transform):
+    """Reference: the pre-LUT float path (astype -> transform -> clip -> cast)."""
+    out = transform(video.astype(np.float32))
+    info = np.iinfo(video.dtype)
+    return np.clip(out, info.min, info.max).astype(video.dtype)
+
+
+def test_lighting_lut_is_bit_identical_to_float_path():
+    # The LUT fast path for integer video must match computing the transform in
+    # float per pixel, exactly (not just approximately).
+    rng = np.random.default_rng(0)
+    video = rng.integers(0, 256, size=(5, 16, 24, 3), dtype=np.uint8)
+
+    for factor in (0.6, 0.85, 1.0, 1.2, 1.6, 2.0):
+        got = BrightnessScale(factor=factor)(video)[0]
+        assert np.array_equal(got, _ref_float(video, lambda x: x * factor))
+
+        got = ContrastScale(factor=factor)(video)[0]
+        assert np.array_equal(got, _ref_float(video, lambda x: (x - 127.5) * factor + 127.5))
+
+    for shift, intensity in ((1.0, 0.35), (-1.0, 0.35), (0.5, 0.2)):
+        rg = 1.0 + intensity * -shift
+        bg = 1.0 + intensity * shift
+        got = ColorTemperatureShift(shift=shift, intensity=intensity)(video)[0]
+        exp = video.astype(np.float32)
+        exp[..., 0] *= rg
+        exp[..., 2] *= bg
+        assert np.array_equal(got, np.clip(exp, 0, 255).astype(np.uint8))
+
+
+def test_lighting_lut_avoids_float_allocation_but_still_handles_float_video():
+    # Float video (no LUT) must still work through the fallback path.
+    video = np.full((3, 8, 8, 3), 0.4, dtype=np.float32)
+    out = BrightnessScale(factor=2.0)(video)[0]
+    assert out.dtype == np.float32
+    np.testing.assert_allclose(out, 0.8, rtol=0, atol=1e-6)
