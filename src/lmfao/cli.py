@@ -26,7 +26,9 @@ so a variant previewed in the browser reproduces here.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import pickle
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -40,6 +42,12 @@ def _seed_for(base: int, ep_i: int, var_i: int, cam_i: int) -> int:
     return (base + ep_i * 1_000_003 + var_i * 10_007 + cam_i * 101) % (2**31)
 
 
+def _job_signature(variants: list[dict], cams: list[str], seed: int) -> str:
+    """Stable hash of the run config so --resume refuses to mix incompatible runs."""
+    payload = json.dumps({"variants": variants, "cams": cams, "seed": seed}, sort_keys=True)
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
 def run(
     input_dir: str | Path,
     output_dir: str | Path,
@@ -48,6 +56,10 @@ def run(
     seed: int,
     cameras: list[str] | None,
     limit: int | None,
+    encoder: str = "libx264",
+    encode_preset: str | None = "veryfast",
+    encode_bitrate: int | None = None,
+    resume: bool = False,
 ) -> dict:
     # Imported here so `--help` works without the [datasets] extra installed.
     from lmfao.datasets.lerobot_reader import LeRobotReader
@@ -88,14 +100,46 @@ def run(
         features=features,
         fps=reader.fps,
         robot_type=reader.info.get("robot_type", ""),
+        encoder=encoder,
+        encode_preset=encode_preset,
+        encode_bitrate=encode_bitrate,
     )
 
     n_source = len(reader) if limit is None else min(limit, len(reader))
-    written = 0
+
+    # ---- resume ----
+    # A SIGKILL (e.g. OOM) bypasses the finalizer, so a crashed run leaves video
+    # + data on disk but no meta/. The checkpoint lets a rerun skip finished
+    # source episodes and restore the writer's accumulators, then finalize.
+    ckpt_path = Path(output_dir) / ".lmfao_resume.pkl"
+    signature = _job_signature(variants, cams, seed)
+    start_ep = 0
+    if resume and ckpt_path.exists():
+        ckpt = pickle.loads(ckpt_path.read_bytes())
+        if ckpt.get("signature") != signature:
+            raise SystemExit(
+                "cannot --resume: the checkpoint was written for a different job/cameras/seed. "
+                "Use a fresh --output, or drop --resume to start over."
+            )
+        writer.load_state_dict(ckpt["writer"])
+        start_ep = int(ckpt["done_source_episodes"])
+        print(f"resuming: {start_ep}/{n_source} source episodes already done", file=sys.stderr)
+
+    def _checkpoint(done_source: int) -> None:
+        # Atomic write so a crash mid-checkpoint can't corrupt the file.
+        blob = pickle.dumps(
+            {"signature": signature, "done_source_episodes": done_source, "writer": writer.state_dict()}
+        )
+        tmp = ckpt_path.with_suffix(".pkl.tmp")
+        tmp.write_bytes(blob)
+        tmp.replace(ckpt_path)
+
+    written = writer.episodes_written
+    completed_run = False
     try:
         warned_no_data = False
-        for ep_i in range(n_source):
-            ep = reader.read_episode(ep_i, cameras=[])  # trajectory only; video streams below
+        for ep_i in range(start_ep, n_source):
+            ep = reader.read_episode(ep_i, cameras=[])  # trajectory only; video decoded below
             if ep.state is None and ep.actions is None and ep.timestamps is None and not warned_no_data:
                 warned_no_data = True
                 print(
@@ -104,16 +148,20 @@ def run(
                     "state/actions",
                     file=sys.stderr,
                 )
+
+            # Decode each camera's source clip ONCE, then reuse it across every
+            # variant. The old code re-decoded per variant (14x the decode work).
+            src_frames = {cam: reader.read_video(ep_i, cam) for cam in cams}
+
             for var_i, variant in enumerate(variants):
-                # Lazy per-camera providers: the writer materializes, encodes,
-                # and frees one camera at a time, so peak memory is one
-                # camera's frames plus the pipeline's working set.
-                def _augment(cam: str, cam_i: int, var_i: int = var_i, ep_i: int = ep_i, variant: dict = variant):
-                    frames = reader.read_video(ep_i, cam)
+                # Per-camera providers so the writer still augments + encodes +
+                # frees one camera at a time (bounded peak memory), but reading
+                # from the pre-decoded source instead of re-decoding.
+                def _augment(cam: str, cam_i: int, var_i: int = var_i, variant: dict = variant, src: dict = src_frames):
                     pipe = AugmentationPipeline.from_config(
                         variant["pipeline"], seed=_seed_for(seed, ep_i, var_i, cam_i)
                     )
-                    out, _ = pipe(frames)
+                    out, _ = pipe(src[cam])
                     return out
 
                 aug_frames = {
@@ -128,13 +176,22 @@ def run(
                     task=ep.task,
                 )
                 written += 1
+            del src_frames  # free the decoded source before the next episode
+            _checkpoint(ep_i + 1)
             print(f"  episode {ep_i + 1}/{n_source} -> {len(variants)} variant(s)", file=sys.stderr)
+        completed_run = True
     finally:
         # Always finalize meta/ so episodes completed before a crash or Ctrl+C
         # remain a loadable dataset instead of orphaned mp4/parquet files.
         writer.close()
-        if written < n_source * len(variants):
-            print(f"run interrupted: finalized {written} completed episode(s) in {output_dir}", file=sys.stderr)
+        if not completed_run:
+            print(
+                f"run interrupted: finalized {written} completed episode(s) in {output_dir}. "
+                f"Rerun with --resume to continue.",
+                file=sys.stderr,
+            )
+        elif ckpt_path.exists():
+            ckpt_path.unlink()  # clean finish: drop the checkpoint
 
     return {"source_episodes": n_source, "variants": len(variants), "written_episodes": written}
 
@@ -147,6 +204,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=None, help="override the job's base seed")
     parser.add_argument("--cameras", nargs="*", default=None, help="override which cameras to augment")
     parser.add_argument("--limit", type=int, default=None, help="only process the first N source episodes")
+    parser.add_argument(
+        "--encoder", default="libx264",
+        help="libav video encoder (default libx264; e.g. h264_videotoolbox for Apple hardware)",
+    )
+    parser.add_argument(
+        "--encode-preset", default="veryfast",
+        help="libx264 speed/size preset (ultrafast..slow; default veryfast). Ignored by hardware encoders.",
+    )
+    parser.add_argument(
+        "--encode-bitrate", type=int, default=None,
+        help="target bits/s for hardware encoders (e.g. 8000000). Ignored by libx264 (which uses CRF).",
+    )
+    parser.add_argument(
+        "--resume", action="store_true",
+        help="continue an interrupted run in --output, skipping already-finished source episodes",
+    )
     args = parser.parse_args(argv)
 
     job = json.loads(Path(args.config).read_text())
@@ -159,6 +232,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         seed=seed,
         cameras=args.cameras,
         limit=args.limit,
+        encoder=args.encoder,
+        encode_preset=args.encode_preset,
+        encode_bitrate=args.encode_bitrate,
+        resume=args.resume,
     )
     print(
         f"wrote {summary['written_episodes']} episodes "

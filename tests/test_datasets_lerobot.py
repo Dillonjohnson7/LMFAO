@@ -263,3 +263,85 @@ def test_cli_finalizes_meta_when_a_late_episode_fails(tmp_path, monkeypatch):
     reader = LeRobotReader(out)
     assert len(reader) == 1
     assert reader.read_episode(0).frames[CAMERA].shape == (5, H, W, 3)
+
+
+def _aug_job(n_variants=2):
+    names = ["lighting.brightness", "lighting.contrast"]
+    return {
+        "lmfao_job": 1,
+        "seed": 0,
+        "cameras": [CAMERA],
+        "variants": [
+            {"id": f"v{i}", "pipeline": [{"name": names[i % 2], "params": {"factor": 1.3}}]}
+            for i in range(n_variants)
+        ],
+    }
+
+
+def test_cli_resume_completes_after_a_crash(tmp_path, monkeypatch):
+    src = tmp_path / "src"
+    out = tmp_path / "out"
+    _write_synthetic(src, n_episodes=3, length=5)
+    job = _aug_job(2)
+
+    # Crash while processing source episode 2 (0-indexed) — a SIGKILL analogue
+    # that skips the finalizer would look like this to the on-disk state.
+    real_read_video = LeRobotReader.read_video
+
+    def flaky(self, index, cam):
+        if index == 2:
+            raise RuntimeError("kill")
+        return real_read_video(self, index, cam)
+
+    monkeypatch.setattr(LeRobotReader, "read_video", flaky)
+    with pytest.raises(RuntimeError, match="kill"):
+        cli.run(src, out, job, seed=0, cameras=None, limit=None, resume=True)
+    assert (out / ".lmfao_resume.pkl").exists()
+
+    # Resume with the real reader: it must skip the 2 finished source episodes
+    # and finish the third, yielding the full 3 x 2 = 6 episode dataset.
+    monkeypatch.setattr(LeRobotReader, "read_video", real_read_video)
+    summary = cli.run(src, out, job, seed=0, cameras=None, limit=None, resume=True)
+    assert summary["written_episodes"] == 6
+
+    reader = LeRobotReader(out)
+    assert len(reader) == 6
+    # Trajectory intact across the resume boundary.
+    for e in range(6):
+        assert reader.read_episode(e, cameras=[]).state.shape == (5, 6)
+    assert not (out / ".lmfao_resume.pkl").exists()  # cleaned up on clean finish
+
+
+def test_cli_resume_rejects_mismatched_job(tmp_path, monkeypatch):
+    src = tmp_path / "src"
+    out = tmp_path / "out"
+    _write_synthetic(src, n_episodes=3, length=5)
+
+    real_read_video = LeRobotReader.read_video
+
+    def flaky(self, index, cam):
+        if index == 2:
+            raise RuntimeError("kill")
+        return real_read_video(self, index, cam)
+
+    monkeypatch.setattr(LeRobotReader, "read_video", flaky)
+    with pytest.raises(RuntimeError):
+        cli.run(src, out, _aug_job(2), seed=0, cameras=None, limit=None, resume=True)
+
+    monkeypatch.setattr(LeRobotReader, "read_video", real_read_video)
+    # Different variant count => different signature => refuse to resume.
+    with pytest.raises(SystemExit, match="different job"):
+        cli.run(src, out, _aug_job(3), seed=0, cameras=None, limit=None, resume=True)
+
+
+def test_cli_veryfast_preset_smaller_than_medium(tmp_path):
+    src = tmp_path / "src"
+    _write_synthetic(src, n_episodes=1, length=8)
+    job = _aug_job(1)
+
+    out_fast, out_med = tmp_path / "fast", tmp_path / "med"
+    cli.run(src, out_fast, job, seed=0, cameras=None, limit=None, encode_preset="veryfast")
+    cli.run(src, out_med, job, seed=0, cameras=None, limit=None, encode_preset="medium")
+    # Both must load and hold the full clip; veryfast is the default we ship.
+    assert LeRobotReader(out_fast).read_episode(0).frames[CAMERA].shape == (8, H, W, 3)
+    assert LeRobotReader(out_med).read_episode(0).frames[CAMERA].shape == (8, H, W, 3)

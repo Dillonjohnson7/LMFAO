@@ -51,6 +51,9 @@ class LeRobotWriter:
         robot_type: str = "",
         video_codec: str = "h264",
         chunks_size: int = 1000,
+        encoder: str = "libx264",
+        encode_preset: str | None = "veryfast",
+        encode_bitrate: int | None = None,
     ) -> None:
         self.root = Path(root)
         (self.root / "meta").mkdir(parents=True, exist_ok=True)
@@ -59,6 +62,12 @@ class LeRobotWriter:
         self.robot_type = robot_type
         self.video_codec = video_codec
         self.chunks_size = chunks_size
+        # H.264 stays the on-disk/info.json codec label; `encoder` is which
+        # libav encoder produces it (libx264, or a hardware encoder like
+        # h264_videotoolbox).
+        self.encoder = encoder
+        self.encode_preset = encode_preset
+        self.encode_bitrate = encode_bitrate
 
         self.camera_keys = [k for k, v in self.features.items() if v.get("dtype") == "video"]
         self._rows: list[dict] = []
@@ -70,6 +79,34 @@ class LeRobotWriter:
 
     def _accumulate(self, feature: str, reduced: np.ndarray) -> None:
         self._samples.setdefault(feature, []).append(reduced)
+
+    @property
+    def episodes_written(self) -> int:
+        return len(self._rows)
+
+    def state_dict(self) -> dict:
+        """Serializable accumulator state for checkpoint/resume.
+
+        Everything the writer needs to `close()` correctly after a restart. The
+        stats samples are a bounded per-episode subsample (a few thousand pixels
+        per feature), so this stays small even for a large dataset.
+        """
+        return {
+            "rows": self._rows,
+            "tasks": self._tasks,
+            "global_index": self._global_index,
+            "samples": self._samples,
+            "video_shape": self._video_shape,
+            "written_features": self._written_features,
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        self._rows = state["rows"]
+        self._tasks = state["tasks"]
+        self._global_index = state["global_index"]
+        self._samples = state["samples"]
+        self._video_shape = state["video_shape"]
+        self._written_features = state["written_features"]
 
     def add_episode(
         self,
@@ -111,7 +148,12 @@ class LeRobotWriter:
                 )
             self._video_shape[cam] = tuple(int(x) for x in arr.shape[1:])
             vpath = self.root / _VIDEO_PATH.format(video_key=cam, chunk_index=0, file_index=ep)
-            encode_mp4(vpath, arr, self.fps, codec="libx264")
+            encode_mp4(
+                vpath, arr, self.fps,
+                codec=self.encoder,
+                preset=self.encode_preset,
+                bitrate=self.encode_bitrate,
+            )
             reduced = reduce_samples(arr, is_image=True, seed=ep)
             ep_stats[cam] = stats_from_samples(reduced, count=int(arr.shape[0]), image_channels=int(arr.shape[-1]))
             self._accumulate(cam, reduced)
