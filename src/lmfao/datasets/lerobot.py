@@ -61,7 +61,10 @@ def _read_tasks(root: Path, pq) -> dict[int, str]:
     path = root / "meta" / "tasks.parquet"
     if not path.exists():
         return {}
-    table = pq.read_table(path)
+    # use_threads=False: pyarrow's threaded reader can deadlock under some
+    # pyarrow/Python builds (seen with pyarrow 25 on CPython 3.14), hanging the
+    # whole CLI. These files are tiny, so single-threaded reads cost nothing.
+    table = pq.read_table(path, use_threads=False)
     cols = table.column_names
     # Real exports vary: some name the text column "task", others write it via a
     # pandas index that parquet preserves as "__index_level_0__". Take "task" if
@@ -86,7 +89,7 @@ def _episode_records(root: Path, pq) -> list[dict]:
     files = sorted((root / "meta" / "episodes").glob("chunk-*/file-*.parquet"))
     records: list[dict] = []
     for f in files:
-        table = pq.read_table(f).to_pylist()
+        table = pq.read_table(f, use_threads=False).to_pylist()
         records.extend(table)
     records.sort(key=lambda r: int(r["episode_index"]))
     return records
@@ -210,7 +213,7 @@ def read_lerobot_dataset(
                 for c in ("observation.state", "action", "episode_index", "frame_index", "task_index")
                 if c in available
             ]
-            data_cache[ckey] = pq.read_table(dpath, columns=wanted).to_pydict()
+            data_cache[ckey] = pq.read_table(dpath, columns=wanted, use_threads=False).to_pydict()
         table = data_cache[ckey]
         if "episode_index" in table:
             ep_col = np.asarray(table["episode_index"])
