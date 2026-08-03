@@ -448,6 +448,7 @@ def run_wizard() -> int:
 
             keep = ask_yesno("Also keep the original (un-augmented) episodes?", default=False)
             limit = ask_int("Limit to N source episodes (0 = all)", default=0, minimum=0)
+            max_frames = ask_int("Quick test: cap frames per episode (0 = full clip)", default=0, minimum=0)
 
             per_ep = sum(r[2] for r in rows)
             n_ep = _episode_count(src, limit)
@@ -478,8 +479,8 @@ def run_wizard() -> int:
                 input=src["path"], output=output, config=cfg_path,
                 demo=(src["kind"] == "demo"), variants=1,
                 include_original=keep, seed=seed, video_key=src["video_key"],
-                write_video_key=None, limit=(limit or None), max_frames=None,
-                overwrite=True,
+                write_video_key=None, limit=(limit or None),
+                max_frames=(max_frames or None), overwrite=True,
             )
             print()
             return _augment(ns)

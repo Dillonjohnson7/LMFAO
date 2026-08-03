@@ -344,7 +344,7 @@ def _to_uint8_rgb(frame: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(arr)
 
 
-def _encode_video(av, path: Path, frames: np.ndarray, fps: float) -> None:
+def _encode_video(av, path: Path, frames: np.ndarray, fps: float, preset: str = "veryfast") -> None:
     from fractions import Fraction
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -357,6 +357,11 @@ def _encode_video(av, path: Path, frames: np.ndarray, fps: float) -> None:
         stream.width = width
         stream.height = height
         stream.pix_fmt = "yuv420p"
+        # These are augmented training clips, not archival masters: 'veryfast'
+        # encodes ~3x quicker than libx264's default 'medium' with a slightly
+        # smaller file, which matters when writing many variants of 720p footage.
+        if preset:
+            stream.options = {"preset": preset}
         for i in range(frames.shape[0]):
             vframe = av.VideoFrame.from_ndarray(_to_uint8_rgb(frames[i]), format="rgb24")
             for packet in stream.encode(vframe):
@@ -371,6 +376,7 @@ def write_lerobot_dataset(
     *,
     video_key: str = "observation.images.render",
     codec_note: str = "h264",
+    video_preset: str = "veryfast",
 ) -> Path:
     """Write episodes to ``root`` in a LeRobot v3-style layout.
 
@@ -494,7 +500,8 @@ def write_lerobot_dataset(
     # --- video first: encoding is the step most likely to fail, so do it before
     # any metadata lands on disk and a failure cannot leave a half-written,
     # structurally-valid-but-videoless dataset behind. ---
-    _encode_video(av, root / "videos" / video_key / "chunk-000" / "file-000.mp4", all_frames, fps)
+    _encode_video(av, root / "videos" / video_key / "chunk-000" / "file-000.mp4", all_frames, fps,
+                  preset=video_preset)
 
     # --- info.json ---
     info = {

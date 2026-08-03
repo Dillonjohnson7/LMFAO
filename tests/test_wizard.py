@@ -76,6 +76,7 @@ def test_wizard_drives_augment_on_demo(tmp_path, monkeypatch):
         "1",           # color_temperature steps -> 2 videos (±0.2)
         "n",           # keep originals?
         "0",           # limit (all)
+        "0",           # frame cap (full clip)
         "y",           # run it?
     ]
     monkeypatch.setattr(builtins, "input", _script(answers))
