@@ -167,6 +167,45 @@ def augment_episodes(
     return TrainingSet(episodes=out)
 
 
+def sweep_episodes(
+    episodes: Sequence[Episode],
+    specs: Sequence[Mapping[str, Any]],
+    *,
+    seed: int | None = None,
+    include_original: bool = False,
+) -> TrainingSet:
+    """Deterministic magnitude sweep: apply each named single-effect pipeline in
+    ``specs`` to every episode, producing one output per (episode, spec).
+
+    Each spec is ``{"label": str, "pipeline": [step, ...]}`` where the pipeline is
+    usually a single augmenter at a fixed magnitude (e.g. brightness +10%). Unlike
+    :func:`augment_episodes` (which reseeds the whole pipeline), this isolates one
+    effect at one magnitude per output, so the output grid is interpretable.
+    """
+    steps = list(specs)
+    if not steps:
+        raise ValueError("no sweep steps configured")
+    eps = list(episodes)
+    out: list[Episode] = []
+    if include_original:
+        for ep in eps:
+            keep = ep.with_frames(ep.frames)
+            keep.metadata["augmented"] = False
+            out.append(keep)
+    for i, ep in enumerate(eps):
+        for j, spec in enumerate(steps):
+            pipe = list(spec.get("pipeline") or [])
+            if not pipe:
+                raise ValueError(f"sweep step {spec.get('label', '?')!r} has an empty pipeline")
+            aug = _season(ep, pipe, _derive_seed(seed, i * len(steps) + j))
+            aug.metadata["augmented"] = True
+            if spec.get("label"):
+                aug.metadata["sweep"] = spec["label"]
+            aug.metadata["source_episode"] = int(i)
+            out.append(aug)
+    return TrainingSet(episodes=out)
+
+
 def _derive_seed(seed: int | None, index: int) -> int | None:
     if seed is None:
         return None

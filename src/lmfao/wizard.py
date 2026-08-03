@@ -170,6 +170,66 @@ def parse_hf_link(text: str) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------- magnitude sweep
+
+# Effects with a clean magnitude axis. Each step k adds inc*k to the base param.
+# Bidirectional effects emit both directions (+ and -) per step, so N steps => 2N
+# videos; magnitude-only effects (noise) emit N.
+_STEP_AUGS: dict[str, dict] = {
+    "lighting.brightness": dict(param="factor", base=1.0, inc=0.05, bidir=True, scale=100, unit="%",
+                                desc="brighter / darker"),
+    "lighting.contrast": dict(param="factor", base=1.0, inc=0.10, bidir=True, scale=100, unit="%",
+                              desc="more / less contrast"),
+    "lighting.color_temperature": dict(param="shift", base=0.0, inc=0.2, bidir=True, scale=1, unit="",
+                                       desc="warmer / cooler"),
+    "noise.gaussian": dict(param="sigma", base=0.0, inc=0.02, bidir=False, scale=100, unit="%",
+                           desc="sensor grain"),
+    "noise.uniform": dict(param="amplitude", base=0.0, inc=0.02, bidir=False, scale=100, unit="%",
+                          desc="quantisation noise"),
+}
+
+
+def _fmt(value: float) -> str:
+    return f"{value:g}"
+
+
+def _build_sweep(name: str, d: dict, n_steps: int) -> tuple[list[dict], list[str]]:
+    """Return (specs, magnitude_labels) for ``n_steps`` of effect ``name``."""
+    param, base, inc = d["param"], d["base"], d["inc"]
+    specs: list[dict] = []
+    mags: list[str] = []
+    for k in range(1, n_steps + 1):
+        mag = inc * k
+        disp = f"{_fmt(mag * d['scale'])}{d['unit']}"
+        mags.append(("±" if d["bidir"] else "") + disp)
+        if d["bidir"]:
+            specs.append(_one(name, param, base + mag, f"+{disp}"))
+            specs.append(_one(name, param, base - mag, f"-{disp}"))
+        else:
+            specs.append(_one(name, param, base + mag, disp))
+    return specs, mags
+
+
+def _one(name: str, param: str, value: float, tag: str) -> dict:
+    return {"label": f"{name} {tag}",
+            "pipeline": [{"name": name, "params": {param: round(value, 4)}, "probability": 1.0}]}
+
+
+def _episode_count(src: dict, limit: int) -> int | None:
+    """Best-effort source-episode count for the projection (no video decode)."""
+    if src["kind"] == "demo":
+        n = 3
+    else:
+        try:
+            import pyarrow.parquet as pq
+
+            from lmfao.datasets.lerobot import _episode_records
+            n = len(_episode_records(Path(src["path"]), pq))
+        except Exception:  # noqa: BLE001 - projection is advisory only
+            return None
+    return min(n, limit) if limit > 0 else n
+
+
 # ---------------------------------------------------------------- augment presets
 
 _PRESETS: dict[str, list[dict]] = {
@@ -310,6 +370,14 @@ def _write_config(pipeline: list[dict], miniworld: dict | None = None) -> str:
     cfg: dict = {"pipeline": pipeline}
     if miniworld is not None:
         cfg["miniworld"] = miniworld
+    return _write_temp(cfg)
+
+
+def _write_sweep_config(specs: list[dict]) -> str:
+    return _write_temp({"sweep": specs})
+
+
+def _write_temp(cfg: dict) -> str:
     fd, name = tempfile.mkstemp(prefix="lmfao_wizard_", suffix=".json")
     with os.fdopen(fd, "w") as f:
         json.dump(cfg, f)
@@ -358,26 +426,54 @@ def run_wizard() -> int:
         seed = ask_int("Random seed (for reproducibility)", default=7)
 
         if op == "augment":
-            pipeline = _choose_pipeline()
-            variants = ask_int("How many augmented copies per episode?", default=3, minimum=1)
+            names = list(_STEP_AUGS)
+            opts = [(n, _STEP_AUGS[n]["desc"]) for n in names]
+            default_idx = [names.index(n) for n in
+                           ("lighting.brightness", "lighting.color_temperature", "noise.gaussian")]
+            chosen = ask_multi("Which effects to sweep?", opts, default_idx)
+
+            print(_dim("\n  For each effect, choose how many magnitude steps."))
+            specs: list[dict] = []
+            rows: list[tuple[str, int, int, list[str]]] = []
+            for name in chosen:
+                d = _STEP_AUGS[name]
+                arrow = "+/-" if d["bidir"] else "+"
+                n = ask_int(f"  {name} ({arrow}, {_fmt(d['inc'] * d['scale'])}{d['unit']} per step) — steps?",
+                            default=3, minimum=1)
+                aug_specs, mags = _build_sweep(name, d, n)
+                specs.extend(aug_specs)
+                rows.append((name, n, len(aug_specs), mags))
+
             keep = ask_yesno("Also keep the original (un-augmented) episodes?", default=False)
-            limit = ask_int("Limit to N episodes (0 = all)", default=0, minimum=0)
-            cfg_path = _write_config(pipeline)
-            _summary([
-                ("source", "demo scene" if src["kind"] == "demo" else src["path"]),
-                ("camera", src["video_key"] or "-"),
-                ("operation", "augment (native resolution)"),
-                ("augmentations", ", ".join(s["name"] for s in pipeline)),
-                ("variants", f"{variants} per episode" + (" + originals" if keep else "")),
-                ("episodes", "all" if limit == 0 else str(limit)),
-                ("output", output),
-            ])
+            limit = ask_int("Limit to N source episodes (0 = all)", default=0, minimum=0)
+
+            per_ep = sum(r[2] for r in rows)
+            n_ep = _episode_count(src, limit)
+            print()
+            print(_bold("  Projected output"))
+            for name, nsteps, count, mags in rows:
+                bidir = _STEP_AUGS[name]["bidir"]
+                print(f"    {name:26} {nsteps} step(s){'  ±' if bidir else '   '}  "
+                      f"{_green(str(count))} videos/ep   {_dim(', '.join(mags))}")
+            print(_dim(f"    {'─' * 60}"))
+            total_line = f"    {per_ep} variations/episode"
+            if n_ep is not None:
+                total = per_ep * n_ep + (n_ep if keep else 0)
+                total_line += f"  ×  {n_ep} episode(s)  =  {_bold(_green(str(per_ep * n_ep)))} augmented videos"
+                if keep:
+                    total_line += _dim(f"  (+ {n_ep} originals = {total} total)")
+            else:
+                total_line += _dim("  (episode count unknown until read)")
+            print(total_line)
+            print()
+
             if not ask_yesno("Run it?", default=True):
                 print(_dim("  Cancelled."))
                 return 0
+            cfg_path = _write_sweep_config(specs)
             ns = argparse.Namespace(
                 input=src["path"], output=output, config=cfg_path,
-                demo=(src["kind"] == "demo"), variants=variants,
+                demo=(src["kind"] == "demo"), variants=1,
                 include_original=keep, seed=seed, video_key=src["video_key"],
                 write_video_key=None, limit=(limit or None), max_frames=None,
                 overwrite=True,

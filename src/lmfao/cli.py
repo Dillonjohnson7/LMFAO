@@ -41,7 +41,7 @@ from lmfao.datasets import Episode, read_lerobot_dataset, write_lerobot_dataset
 from lmfao.datasets.poses import assume_camera_track
 from lmfao.miniworld import MiniWorldConfig, default_intrinsics, look_at
 from lmfao.pipeline import AugmentationPipeline
-from lmfao.program import augment_episodes, generate_training_set
+from lmfao.program import augment_episodes, generate_training_set, sweep_episodes
 
 
 class CliError(Exception):
@@ -139,10 +139,14 @@ def _load_config(path: str | None) -> dict:
     return data
 
 
-def _load_pipeline_config(path: str | None) -> list:
-    """Load and validate an augment config: a bare list of augmentation steps,
-    or an object with a ``pipeline`` list (the combined generate config works too,
-    its ``miniworld`` block is ignored here)."""
+def _load_augment_config(path: str | None) -> tuple[str, list]:
+    """Load and validate an augment config. Returns ``(mode, payload)``:
+
+    - ``("pipeline", steps)`` for a bare list of steps or ``{"pipeline": [...]}``
+      -- one pipeline applied together, ``--variants`` random reseeds.
+    - ``("sweep", specs)`` for ``{"sweep": [{"label", "pipeline"}, ...]}`` -- a
+      deterministic magnitude sweep, one output per spec per episode.
+    """
     if path is None:
         raise CliError("augment needs --config with a pipeline of augmentation steps")
     try:
@@ -154,18 +158,29 @@ def _load_pipeline_config(path: str | None) -> list:
     except json.JSONDecodeError as e:
         raise CliError(f"config {path} is not valid JSON: {e}") from e
 
+    if isinstance(data, dict) and "sweep" in data:
+        specs = data["sweep"]
+        if not isinstance(specs, list) or not specs:
+            raise CliError("augment 'sweep' must be a non-empty list of {label, pipeline} steps")
+        try:
+            for spec in specs:
+                AugmentationPipeline.from_config(spec["pipeline"])
+        except (ValueError, TypeError, KeyError) as e:
+            raise CliError(f"invalid sweep config {path}: {e}") from e
+        return "sweep", specs
+
     if isinstance(data, list):
         steps = data
     elif isinstance(data, dict):
         if "pipeline" not in data:
-            raise CliError("augment config object must contain a 'pipeline' list")
+            raise CliError("augment config object must contain a 'pipeline' or 'sweep' list")
         steps = data["pipeline"]
         mw = data.get("miniworld")
         if isinstance(mw, dict) and mw.get("enabled"):
             print("note: augment ignores the 'miniworld' block; "
                   "use `lmfao generate` to synthesize novel views")
     else:
-        raise CliError("augment config must be a list of steps or an object with a 'pipeline' list")
+        raise CliError("augment config must be a list of steps or an object with 'pipeline'/'sweep'")
 
     if not isinstance(steps, list) or not steps:
         raise CliError("augment needs a non-empty 'pipeline' list of augmentation steps")
@@ -173,7 +188,7 @@ def _load_pipeline_config(path: str | None) -> list:
         AugmentationPipeline.from_config(steps)
     except (ValueError, TypeError, KeyError) as e:
         raise CliError(f"invalid config {path}: {e}") from e
-    return steps
+    return "pipeline", steps
 
 
 def _miniworld_cfg(config: dict) -> MiniWorldConfig:
@@ -191,7 +206,7 @@ def _augment(args: argparse.Namespace) -> int:
     if args.variants < 1:
         raise CliError("--variants must be at least 1")
 
-    pipeline_config = _load_pipeline_config(args.config)
+    mode, payload = _load_augment_config(args.config)
 
     out = Path(args.output)
     if (out / "meta" / "info.json").exists() and not args.overwrite:
@@ -216,11 +231,21 @@ def _augment(args: argparse.Namespace) -> int:
 
     # Augment keeps native resolution — this is real footage, just seasoned — so
     # there is no downscale step here (that is a GENERATE-only concern).
+    origins = " + originals" if args.include_original else ""
     try:
-        result = augment_episodes(
-            real, pipeline_config, variants=args.variants, seed=args.seed,
-            include_original=args.include_original,
-        )
+        if mode == "sweep":
+            result = sweep_episodes(
+                real, payload, seed=args.seed, include_original=args.include_original,
+            )
+            desc = f"swept {len(real)} source episode(s) x {len(payload)} step(s){origins}"
+        else:
+            result = augment_episodes(
+                real, payload, variants=args.variants, seed=args.seed,
+                include_original=args.include_original,
+            )
+            steps = ", ".join(s.get("name", "?") for s in payload)
+            desc = (f"augmented {len(real)} source episode(s) x {args.variants} variant(s)"
+                    f"{origins}; steps: {steps}")
     except (ValueError, TypeError, KeyError) as e:
         raise CliError(f"augmentation failed: {e}") from e
 
@@ -231,10 +256,7 @@ def _augment(args: argparse.Namespace) -> int:
     except (OSError, ValueError) as e:
         raise CliError(f"cannot write {out}: {e}") from e
 
-    steps = ", ".join(s.get("name", "?") for s in pipeline_config)
-    origins = " + originals" if args.include_original else ""
-    print(f"augmented {len(real)} source episode(s) x {args.variants} variant(s){origins}; "
-          f"steps: {steps}")
+    print(desc)
     print(f"wrote {len(result.episodes)} episodes -> {out}")
     return 0
 

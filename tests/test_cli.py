@@ -181,3 +181,17 @@ def test_augment_rejects_bad_variants(tmp_path, capsys):
                "--output", str(tmp_path / "o")])
     assert rc == 2
     assert "variants" in capsys.readouterr().err
+
+
+def test_augment_sweep_config_produces_one_output_per_spec(tmp_path):
+    cfg = tmp_path / "sweep.json"
+    cfg.write_text(json.dumps({"sweep": [
+        {"label": "b-10", "pipeline": [{"name": "lighting.brightness", "params": {"factor": 0.9}}]},
+        {"label": "b+10", "pipeline": [{"name": "lighting.brightness", "params": {"factor": 1.1}}]},
+    ]}))
+    out = tmp_path / "out"
+    rc = main(["augment", "--demo", "--config", str(cfg), "--output", str(out)])
+    assert rc == 0
+    back = read_lerobot_dataset(out)
+    assert len(back) == 6  # 3 demo episodes x 2 sweep steps
+    assert {e.metadata.get("sweep") for e in back} == {"b-10", "b+10"}

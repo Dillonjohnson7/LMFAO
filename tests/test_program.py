@@ -4,7 +4,7 @@ from conftest import PUCK_COLOR, build_episode
 
 from lmfao import generate_training_set
 from lmfao.datasets import Episode
-from lmfao.program import TrainingSet, augment_episodes
+from lmfao.program import TrainingSet, augment_episodes, sweep_episodes
 
 _PIPE = [
     {"name": "lighting.brightness", "params": {"factor": 0.5}},
@@ -53,6 +53,40 @@ def test_augment_rejects_empty_pipeline_and_bad_variants():
         augment_episodes(_plain(1), [], variants=1)
     with pytest.raises(ValueError, match="variants"):
         augment_episodes(_plain(1), _PIPE, variants=0)
+
+
+def _bright(tag, factor):
+    return {"label": f"brightness {tag}",
+            "pipeline": [{"name": "lighting.brightness", "params": {"factor": factor}}]}
+
+
+def test_sweep_one_output_per_episode_per_spec():
+    specs = [_bright("-10%", 0.9), _bright("+10%", 1.1), _bright("+20%", 1.2)]
+    ts = sweep_episodes(_plain(2), specs, seed=1)
+    assert len(ts.episodes) == 6  # 2 episodes x 3 specs
+    labels = {e.metadata["sweep"] for e in ts.episodes}
+    assert labels == {"brightness -10%", "brightness +10%", "brightness +20%"}
+    assert all(e.metadata.get("augmented") for e in ts.episodes)
+
+
+def test_sweep_applies_the_specified_magnitude():
+    specs = [_bright("-20%", 0.8), _bright("+20%", 1.2)]
+    ts = sweep_episodes(_plain(1), specs, seed=1)
+    by = {e.metadata["sweep"]: e.frames.mean() for e in ts.episodes}
+    assert by["brightness -20%"] < 100 < by["brightness +20%"]  # 100 is the source value
+
+
+def test_sweep_includes_originals_and_is_reproducible():
+    specs = [_bright("+10%", 1.1)]
+    a = sweep_episodes(_plain(1), specs, seed=3, include_original=True)
+    b = sweep_episodes(_plain(1), specs, seed=3, include_original=True)
+    assert sum(1 for e in a.episodes if not e.metadata.get("augmented")) == 1
+    assert all(np.array_equal(x.frames, y.frames) for x, y in zip(a.episodes, b.episodes))
+
+
+def test_sweep_rejects_empty():
+    with pytest.raises(ValueError, match="no sweep steps"):
+        sweep_episodes(_plain(1), [])
 
 
 def _reals(n=3):
