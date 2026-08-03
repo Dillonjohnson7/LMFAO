@@ -5,8 +5,13 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from lmfao.base import Augmenter, Metadata, Video, preserve_dtype
-from lmfao.features.lighting.utils import metadata_params, sample_range, validate_positive_range
+from lmfao.base import Augmenter, Metadata, Video
+from lmfao.features.lighting.utils import (
+    apply_pointwise,
+    metadata_params,
+    sample_range,
+    validate_positive_range,
+)
 from lmfao.registry import register_augmenter
 
 
@@ -39,7 +44,7 @@ class BrightnessScale(Augmenter):
 
     def apply(self, video: Video, metadata: Metadata, rng: np.random.Generator) -> tuple[Video, Metadata]:
         factor = sample_range(self.factor, self.min_factor, self.max_factor, rng)
-        augmented = preserve_dtype(video, video.astype(np.float32, copy=True) * factor)
+        augmented = apply_pointwise(video, lambda x: x * factor)
 
         metadata.setdefault("augmentation_params", {})[self.name] = metadata_params(
             {

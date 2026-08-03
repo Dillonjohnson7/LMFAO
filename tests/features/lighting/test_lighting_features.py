@@ -128,3 +128,40 @@ def test_lighting_config_validation():
 
     with pytest.raises(ValueError, match="min_shift/max_shift"):
         build_augmenter("lighting.color_temperature", min_shift=0.5, max_shift=-0.5)
+
+
+# --- LUT fast path: integer video must be bit-identical to the float reference ---
+
+def _ref_pointwise(video, transform):
+    from lmfao.base import preserve_dtype
+    return preserve_dtype(video, transform(video.astype(np.float32)))
+
+
+@pytest.mark.parametrize("factor", [0.5, 0.85, 0.95, 1.05, 1.15, 1.5, 2.0])
+@pytest.mark.parametrize("channels", [1, 3, 4])
+def test_brightness_lut_matches_float_path(factor, channels):
+    rng = np.random.default_rng(0)
+    v = rng.integers(0, 256, (3, 12, 16, channels), dtype=np.uint8)
+    out, _ = BrightnessScale(factor=factor)(v, {}, np.random.default_rng(1))
+    assert np.array_equal(out, _ref_pointwise(v, lambda x: x * factor))
+
+
+@pytest.mark.parametrize("factor", [0.6, 0.9, 1.1, 1.6])
+def test_contrast_lut_matches_float_path(factor):
+    rng = np.random.default_rng(0)
+    v = rng.integers(0, 256, (3, 12, 16, 3), dtype=np.uint8)
+    out, _ = ContrastScale(factor=factor)(v, {}, np.random.default_rng(1))
+    assert np.array_equal(out, _ref_pointwise(v, lambda x: (x - 127.5) * factor + 127.5))
+
+
+@pytest.mark.parametrize("shift", [-0.6, -0.2, 0.2, 0.6])
+def test_color_temperature_lut_matches_float_path(shift):
+    rng = np.random.default_rng(0)
+    v = rng.integers(0, 256, (3, 12, 16, 3), dtype=np.uint8)
+    out, m = ColorTemperatureShift(shift=shift, intensity=0.35)(v, {}, np.random.default_rng(1))
+    p = m["augmentation_params"]["lighting.color_temperature"]
+    ref = v.astype(np.float32)
+    ref[..., 0] *= p["red_gain"]
+    ref[..., 2] *= p["blue_gain"]
+    from lmfao.base import preserve_dtype
+    assert np.array_equal(out, preserve_dtype(v, ref))
