@@ -18,6 +18,12 @@ export interface ExtractOptions {
   maxWidth?: number;
   signal?: AbortSignal;
   onFrame?: (done: number, total: number) => void;
+  /**
+   * Only sample within [from, to) seconds of the file. Used for LeRobot v3.0
+   * packed videos, where several episodes share one mp4 and an episode is a
+   * timestamp window into it.
+   */
+  window?: { from: number; to: number };
 }
 
 const DEFAULTS = { maxFrames: 28, maxWidth: 320 };
@@ -107,21 +113,27 @@ export async function extractFrames(
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
     if (!ctx) throw new Error("2D canvas context unavailable");
 
+    // Clamp the requested window (if any) to what the file actually contains.
+    const winFrom = Math.max(0, Math.min(opts.window?.from ?? 0, duration));
+    const winTo =
+      duration > 0 ? Math.max(winFrom, Math.min(opts.window?.to ?? duration, duration)) : 0;
+    const windowSpan = winTo - winFrom;
+
     const frameCount = duration > 0 ? maxFrames : 1;
     const frames: ImageData[] = [];
-    // Sample within [0, duration) leaving a small tail margin so the last seek
-    // doesn't overshoot the end and return a blank frame.
-    const span = duration > 0 ? duration * 0.98 : 0;
+    // Sample within the window leaving a small tail margin so the last seek
+    // doesn't overshoot the end (or bleed into the next packed episode).
+    const span = windowSpan > 0 ? windowSpan * 0.98 : 0;
     for (let i = 0; i < frameCount; i++) {
       if (signal?.aborted) throw abortError();
-      const t = frameCount > 1 ? (span * i) / (frameCount - 1) : 0;
+      const t = winFrom + (frameCount > 1 ? (span * i) / (frameCount - 1) : 0);
       await seek(video, t);
       ctx.drawImage(video, 0, 0, width, height);
       frames.push(ctx.getImageData(0, 0, width, height));
       opts.onFrame?.(i + 1, frameCount);
     }
 
-    const fps = duration > 0 ? frameCount / duration : 12;
+    const fps = windowSpan > 0 ? frameCount / windowSpan : 12;
 
     return { frames, width, height, sourceWidth, sourceHeight, fps, duration };
   } finally {

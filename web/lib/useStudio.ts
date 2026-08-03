@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { buildTiles, type TileData } from "./pipeline";
-import { downloadBlob, exportDataset } from "./exporter";
+import { downloadBlob, exportJob } from "./exporter";
+import { parseLeRobotFolder, type LeRobotDataset } from "./lerobot";
 import { extractFrames } from "./video";
 
 export type Status = "idle" | "decoding" | "augmenting" | "ready" | "error";
@@ -19,6 +20,15 @@ export const OVERVIEW_FPS = 8;
 // If the sampled rate (frames / duration) exceeds this, the frames are dense
 // enough that real-time playback looks right, so default to it.
 export const REALTIME_THRESHOLD_FPS = 15;
+// Base seed written into exported job configs; the CLI derives per-episode
+// seeds from it, so any fixed value keeps runs reproducible.
+export const JOB_SEED = 42;
+
+interface PreviewSource {
+  source: File | string;
+  name: string;
+  window?: { from: number; to: number };
+}
 
 // All studio state + actions, shared by every skin of the UI (slop / non-slop).
 export function useStudio() {
@@ -30,12 +40,19 @@ export function useStudio() {
   const [startTime, setStartTime] = useState(0);
   const [fileName, setFileName] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [exporting, setExporting] = useState<{ done: number; total: number } | null>(null);
+  const [exporting, setExporting] = useState<boolean>(false);
   const [frameCount, setFrameCount] = useState(FRAMES_DEFAULT);
   const [realtime, setRealtime] = useState(false);
 
+  // LeRobot dataset mode: set when the user picks a dataset folder. The tile
+  // grid then previews one episode/camera at a time, and export produces a CLI
+  // job that augments the WHOLE dataset.
+  const [dataset, setDataset] = useState<LeRobotDataset | null>(null);
+  const [episodeIndex, setEpisodeIndex] = useState(0);
+  const [camera, setCamera] = useState<string | null>(null);
+
   const frameCountRef = useRef(FRAMES_DEFAULT);
-  const lastSourceRef = useRef<{ source: File | string; name: string } | null>(null);
+  const lastSourceRef = useRef<PreviewSource | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   // The sampled rate: how many extracted frames each real second of the clip
@@ -44,8 +61,9 @@ export function useStudio() {
   const playbackFps = Math.max(1, realtime ? sampledFps : OVERVIEW_FPS);
   const frameDurationMs = 1000 / playbackFps;
 
-  const run = useCallback(async (source: File | string, name: string) => {
-    lastSourceRef.current = { source, name };
+  const run = useCallback(async (preview: PreviewSource) => {
+    lastSourceRef.current = preview;
+    abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
     const { signal } = controller;
@@ -54,13 +72,14 @@ export function useStudio() {
     setStatus("decoding");
     setTiles([]);
     setSelected(new Set());
-    setFileName(name);
+    setFileName(preview.name);
     setProgress({ done: 0, total: frameCountRef.current });
     try {
-      const clip = await extractFrames(source, {
+      const clip = await extractFrames(preview.source, {
         maxFrames: frameCountRef.current,
         maxWidth: 320,
         signal,
+        window: preview.window,
         onFrame: (done, total) => setProgress({ done, total }),
       });
       if (clip.frames.length === 0) throw new Error("No frames could be decoded from this file.");
@@ -75,6 +94,9 @@ export function useStudio() {
       setStartTime(performance.now());
       setStatus("ready");
     } catch (e) {
+      // A superseding run() already aborted us and owns the state now; any
+      // state write here would clobber the new run's setup.
+      if (abortRef.current !== controller) return;
       if (signal.aborted || (e as { name?: string })?.name === "AbortError") {
         // User cancelled: quietly return to the idle state.
         setStatus("idle");
@@ -90,6 +112,11 @@ export function useStudio() {
     }
   }, []);
 
+  // Stop any in-flight decode/augment loop when the page unmounts.
+  useEffect(() => {
+    return () => abortRef.current?.abort();
+  }, []);
+
   const cancel = useCallback(() => {
     abortRef.current?.abort();
   }, []);
@@ -100,6 +127,64 @@ export function useStudio() {
     setStartTime(performance.now());
   }, []);
 
+  /** Preview one episode/camera of the loaded dataset. */
+  const previewEpisode = useCallback(
+    (ds: LeRobotDataset, epIdx: number, cam: string) => {
+      const ep = ds.episodes[epIdx];
+      const video = ep?.videos[cam];
+      if (!ep || !video) {
+        setError(`Episode ${epIdx} has no video for ${cam}.`);
+        setStatus("error");
+        return;
+      }
+      setEpisodeIndex(epIdx);
+      setCamera(cam);
+      run({
+        source: video.file,
+        name: `${ds.name} · ep ${ep.index} · ${cam.replace(/^observation\.images\./, "")}`,
+        window: { from: video.from, to: video.to },
+      });
+    },
+    [run]
+  );
+
+  /** Entry point for the dataset folder picker. */
+  const onFolder = useCallback(
+    async (files: FileList | null) => {
+      if (!files || files.length === 0) return;
+      setError(null);
+      setStatus("decoding");
+      setProgress({ done: 0, total: 0 });
+      try {
+        const ds = await parseLeRobotFolder(files);
+        setDataset(ds);
+        const cam = ds.cameras.find((c) => ds.episodes[0].videos[c]) ?? ds.cameras[0];
+        previewEpisode(ds, 0, cam);
+      } catch (e) {
+        setDataset(null);
+        setError(e instanceof Error ? e.message : String(e));
+        setStatus("error");
+      }
+    },
+    [previewEpisode]
+  );
+
+  const selectEpisode = useCallback(
+    (epIdx: number) => {
+      if (!dataset || !camera) return;
+      previewEpisode(dataset, epIdx, camera);
+    },
+    [dataset, camera, previewEpisode]
+  );
+
+  const selectCamera = useCallback(
+    (cam: string) => {
+      if (!dataset) return;
+      previewEpisode(dataset, episodeIndex, cam);
+    },
+    [dataset, episodeIndex, previewEpisode]
+  );
+
   const onFile = useCallback(
     (file: File | undefined) => {
       if (!file) return;
@@ -108,7 +193,9 @@ export function useStudio() {
         setStatus("error");
         return;
       }
-      run(file, file.name);
+      setDataset(null);
+      setCamera(null);
+      run({ source: file, name: file.name });
     },
     [run]
   );
@@ -134,30 +221,39 @@ export function useStudio() {
 
   const regenerate = useCallback(() => {
     const s = lastSourceRef.current;
-    if (s) run(s.source, s.name);
+    if (s) run(s);
   }, [run]);
 
-  const runDemo = useCallback(() => run(DEMO_SRC, "demo.mp4"), [run]);
+  const runDemo = useCallback(() => {
+    setDataset(null);
+    setCamera(null);
+    run({ source: DEMO_SRC, name: "demo.mp4" });
+  }, [run]);
+
+  // The untouched "original" tile has no pipeline config, so it can't be part
+  // of an exported job; the export button should count and gate on these.
+  const exportableCount = tiles.filter(
+    (t) => selected.has(t.spec.id) && t.spec.family !== "original"
+  ).length;
 
   const onExport = useCallback(async () => {
-    if (!meta) return;
-    const chosen = tiles.filter((t) => selected.has(t.spec.id));
+    const chosen = tiles.filter((t) => selected.has(t.spec.id) && t.spec.family !== "original");
     if (chosen.length === 0) return;
-    setExporting({ done: 0, total: 0 });
+    setExporting(true);
     try {
-      const blob = await exportDataset(
-        chosen,
-        { source: fileName ?? "clip", width: meta.w, height: meta.h, frameCount: meta.frames, fps: meta.fps },
-        (done, total) => setExporting({ done, total })
-      );
-      const stem = (fileName ?? "clip").replace(/\.[^.]+$/, "");
-      downloadBlob(blob, `${stem}-lmfao-dataset.zip`);
+      const blob = await exportJob(chosen, {
+        source: dataset?.name ?? fileName ?? "clip",
+        cameras: dataset && camera ? [camera] : [],
+        seed: JOB_SEED,
+      });
+      const stem = (dataset?.name ?? fileName ?? "clip").replace(/\.[^.]+$/, "").replace(/[^\w.-]+/g, "-");
+      downloadBlob(blob, `${stem}-lmfao-job.zip`);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setExporting(null);
+      setExporting(false);
     }
-  }, [tiles, selected, meta, fileName]);
+  }, [tiles, selected, dataset, camera, fileName]);
 
   const busy = status === "decoding" || status === "augmenting";
 
@@ -170,6 +266,7 @@ export function useStudio() {
     startTime,
     fileName,
     selected,
+    exportableCount,
     exporting,
     frameCount,
     frameDurationMs,
@@ -177,11 +274,17 @@ export function useStudio() {
     sampledFps,
     playbackFps,
     busy,
+    dataset,
+    episodeIndex,
+    camera,
     run,
     runDemo,
     cancel,
     toggleRealtime,
     onFile,
+    onFolder,
+    selectEpisode,
+    selectCamera,
     toggle,
     selectAll,
     clearAll,
