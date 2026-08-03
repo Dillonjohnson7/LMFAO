@@ -93,8 +93,17 @@ def run(
     n_source = len(reader) if limit is None else min(limit, len(reader))
     written = 0
     try:
+        warned_no_data = False
         for ep_i in range(n_source):
             ep = reader.read_episode(ep_i, cameras=[])  # trajectory only; video streams below
+            if ep.state is None and ep.actions is None and ep.timestamps is None and not warned_no_data:
+                warned_no_data = True
+                print(
+                    "warning: source episodes have no data parquet (partial dataset copy?); "
+                    "output will contain augmented video with synthesized timestamps but no "
+                    "state/actions",
+                    file=sys.stderr,
+                )
             for var_i, variant in enumerate(variants):
                 # Lazy per-camera providers: the writer materializes, encodes,
                 # and frees one camera at a time, so peak memory is one
