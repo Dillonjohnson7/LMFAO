@@ -63,16 +63,23 @@ def _read_tasks(root: Path, pq) -> dict[int, str]:
         return {}
     table = pq.read_table(path)
     cols = table.column_names
-    tasks: dict[int, str] = {}
-    if "task_index" in cols and "task" in cols:
+    # Real exports vary: some name the text column "task", others write it via a
+    # pandas index that parquet preserves as "__index_level_0__". Take "task" if
+    # present, else the single non-index column.
+    if "task" in cols:
+        text_col = "task"
+    else:
+        others = [c for c in cols if c != "task_index"]
+        if len(others) != 1:
+            return {}
+        text_col = others[0]
+    txt = table.column(text_col).to_pylist()
+    if "task_index" in cols:
         idx = table.column("task_index").to_pylist()
-        txt = table.column("task").to_pylist()
-        tasks = {int(i): str(t) for i, t in zip(idx, txt)}
     else:
         # Some exports index tasks by row position.
-        txt = table.column("task").to_pylist() if "task" in cols else []
-        tasks = {i: str(t) for i, t in enumerate(txt)}
-    return tasks
+        idx = list(range(len(txt)))
+    return {int(i): str(t) for i, t in zip(idx, txt)}
 
 
 def _episode_records(root: Path, pq) -> list[dict]:
@@ -96,7 +103,12 @@ def _decode_frames(av, path: Path, from_ts: float, to_ts: float, expected: int) 
                 container.seek(int(max(from_ts - 0.5, 0) / stream.time_base), stream=stream)
             except Exception:
                 container.seek(0)
-        tol = 1e-6
+        # Half a frame period of slack: episode boundaries come from the
+        # dataset's fps while frame PTS come from the stream's rate, and the two
+        # grids can differ by float rounding (e.g. 29.97 fps written as
+        # 30000/1001). Anything within half a period is unambiguous.
+        rate = stream.average_rate
+        tol = float(1.0 / (2.0 * float(rate))) if rate else 1e-6
         for frame in container.decode(stream):
             t = float(frame.pts * stream.time_base) if frame.pts is not None else None
             if t is not None and t < from_ts - tol:
@@ -141,7 +153,13 @@ def read_lerobot_dataset(
     keys = _video_keys(info)
     if not keys:
         raise ValueError(f"no video features found in {root}/meta/info.json")
-    key = video_key or keys[0]
+    if video_key is None:
+        # Partially-downloaded datasets can declare streams whose shards were
+        # never pulled; default to one that is actually on disk.
+        on_disk = [k for k in keys if (root / "videos" / k).exists()]
+        key = (on_disk or keys)[0]
+    else:
+        key = video_key
     if key not in keys:
         raise ValueError(f"video_key {key!r} not in dataset (have: {', '.join(keys)})")
 
@@ -149,6 +167,11 @@ def read_lerobot_dataset(
     video_tpl = info["video_path"]
     tasks = _read_tasks(root, pq)
     records = _episode_records(root, pq)
+    # Whether the whole dataset lives in one data parquet — if so, the global
+    # dataset_from/to_index range doubles as a row range within that file.
+    single_data_file = (
+        len({(int(r["data/chunk_index"]), int(r["data/file_index"])) for r in records}) <= 1
+    )
 
     # Optional provenance sidecar written by write_lerobot_dataset (§8d).
     prov_path = root / "meta" / "lmfao_provenance.json"
@@ -172,26 +195,45 @@ def read_lerobot_dataset(
         ckey = (dchunk, dfile)
         if ckey not in data_cache:
             dpath = root / data_tpl.format(chunk_index=dchunk, file_index=dfile)
+            if not dpath.exists():
+                raise ValueError(
+                    f"data parquet {dpath} referenced by episode {ep_index} does not "
+                    "exist; the dataset looks incomplete (partial download?)"
+                )
             # Only the columns we need — the raw parquet can carry huge per-frame
             # depth/teleop columns that would be pointlessly slow to load.
             available = pq.ParquetFile(dpath).schema_arrow.names
             wanted = [
                 c
-                for c in ("observation.state", "action", "episode_index", "frame_index")
+                for c in ("observation.state", "action", "episode_index", "frame_index", "task_index")
                 if c in available
             ]
             data_cache[ckey] = pq.read_table(dpath, columns=wanted).to_pydict()
         table = data_cache[ckey]
-        ep_col = np.asarray(table["episode_index"])
-        rows = np.nonzero(ep_col == ep_index)[0]
-        frame_idx = np.asarray(table["frame_index"])[rows]
-        rows = rows[np.argsort(frame_idx)]
+        if "episode_index" in table:
+            ep_col = np.asarray(table["episode_index"])
+            rows = np.nonzero(ep_col == ep_index)[0]
+        elif single_data_file and rec.get("dataset_from_index") is not None:
+            rows = np.arange(int(rec["dataset_from_index"]), int(rec["dataset_to_index"]))
+        else:
+            raise ValueError(
+                f"data parquet for episode {ep_index} has no 'episode_index' column "
+                "and the episode's rows cannot be located from its record"
+            )
+        if "frame_index" in table:
+            frame_idx = np.asarray(table["frame_index"])[rows]
+            rows = rows[np.argsort(frame_idx)]
 
         def _col(name: str) -> np.ndarray | None:
             if name not in table:
                 return None
             col = table[name]
-            return np.asarray([col[int(i)] for i in rows], dtype=float)
+            arr = np.asarray([col[int(i)] for i in rows], dtype=float)
+            # A zero-width column is how the writer encodes "no state/actions";
+            # surface it as None so absence round-trips faithfully.
+            if arr.ndim == 2 and arr.shape[1] == 0:
+                return None
+            return arr
 
         state = _col("observation.state")
         actions = _col("action")
@@ -202,7 +244,17 @@ def read_lerobot_dataset(
         from_ts = float(rec[f"videos/{key}/from_timestamp"])
         to_ts = float(rec[f"videos/{key}/to_timestamp"])
         vpath = root / video_tpl.format(video_key=key, chunk_index=vchunk, file_index=vfile)
-        frames = _decode_frames(av, vpath, from_ts, to_ts, expected=length)
+        if not vpath.exists():
+            on_disk = sorted(
+                p.name for p in (root / "videos").glob("*") if p.is_dir()
+            ) if (root / "videos").exists() else []
+            raise ValueError(
+                f"video shard {vpath} for episode {ep_index} (video_key {key!r}) does "
+                f"not exist; streams on disk: {', '.join(on_disk) or 'none'}. "
+                "Pass video_key= to pick a downloaded stream."
+            )
+        expected = min(length, int(max_frames)) if max_frames else length
+        frames = _decode_frames(av, vpath, from_ts, to_ts, expected=expected)
 
         # Align lengths (decoder can hand back one extra/fewer at boundaries).
         n = frames.shape[0]
@@ -219,17 +271,22 @@ def read_lerobot_dataset(
         task = ""
         if isinstance(rec.get("tasks"), list) and rec["tasks"]:
             task = str(rec["tasks"][0])
+        elif rec.get("task_index") is not None:
+            task = tasks.get(int(rec["task_index"]), "")
+        elif "task_index" in table and len(rows):
+            task = tasks.get(int(np.asarray(table["task_index"])[rows[0]]), "")
         elif tasks:
             task = tasks.get(0, "")
 
-        metadata: dict[str, Any] = {
-            "episode_index": ep_index,
-            "source_dataset": root.name,
-            "video_key": key,
-        }
+        metadata: dict[str, Any] = {}
         if provenance is not None and 0 <= ep_index < len(provenance):
             # Restore stamped provenance (synthetic flag, miniworld record, ...).
             metadata.update(provenance[ep_index])
+        # Reader-owned keys always describe THIS dataset, never sidecar values
+        # stamped from a previous source.
+        metadata["episode_index"] = ep_index
+        metadata["source_dataset"] = root.name
+        metadata["video_key"] = key
 
         out.append(
             Episode(
@@ -249,6 +306,20 @@ def read_lerobot_dataset(
 # ---------------------------------------------------------------- writing
 
 
+def _json_default(obj: Any) -> Any:
+    """JSON fallback that keeps numpy values round-trippable.
+
+    ``default=str`` would silently turn ``np.int64(7)`` into ``"7"`` and an
+    ndarray into its repr; convert to native Python containers instead and only
+    stringify genuinely unserializable objects.
+    """
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, np.generic):
+        return obj.item()
+    return str(obj)
+
+
 def _to_uint8_rgb(frame: np.ndarray) -> np.ndarray:
     """Coerce an (H, W, C) frame to contiguous uint8 RGB for video encoding."""
     arr = np.asarray(frame)
@@ -262,17 +333,22 @@ def _to_uint8_rgb(frame: np.ndarray) -> np.ndarray:
     if c == 1:
         arr = np.repeat(arr, 3, axis=-1)
     elif c == 4:
-        arr = arr[:, :, :3]
+        arr = arr[..., :3]
     elif c != 3:
         raise ValueError(f"unsupported channel count for video: {c}")
     return np.ascontiguousarray(arr)
 
 
 def _encode_video(av, path: Path, frames: np.ndarray, fps: float) -> None:
+    from fractions import Fraction
+
     path.parent.mkdir(parents=True, exist_ok=True)
     height, width = frames.shape[1], frames.shape[2]
     with av.open(str(path), mode="w") as container:
-        stream = container.add_stream("libx264", rate=int(round(fps)))
+        # A rational rate keeps the PTS grid on the dataset's true fps; rounding
+        # to int would drift the frame times away from the fps-derived episode
+        # timestamps and corrupt episode boundaries for e.g. 29.97 fps.
+        stream = container.add_stream("libx264", rate=Fraction(fps).limit_denominator(1_000_000))
         stream.width = width
         stream.height = height
         stream.pix_fmt = "yuv420p"
@@ -308,6 +384,11 @@ def write_lerobot_dataset(
     for ep in episodes:
         if (ep.height, ep.width) != (h, w):
             raise ValueError("all episodes must share height/width to write one shard")
+    if h % 2 or w % 2:
+        raise ValueError(
+            f"frame size {w}x{h} is not encodable: libx264/yuv420p needs even "
+            "width and height. Crop or pad the frames to even dimensions first."
+        )
     fps = float(ref.fps)
 
     # --- concatenate frames + per-frame rows ---
@@ -317,6 +398,17 @@ def write_lerobot_dataset(
     task_to_index: dict[str, int] = {}
     state_dim = next((ep.state.shape[1] for ep in episodes if ep.state is not None), 0)
     action_dim = next((ep.actions.shape[1] for ep in episodes if ep.actions is not None), 0)
+    for ei, ep in enumerate(episodes):
+        if ep.state is not None and ep.state.shape[1] != state_dim:
+            raise ValueError(
+                f"episode {ei} has state dim {ep.state.shape[1]} but the dataset "
+                f"uses {state_dim}; all episodes must agree"
+            )
+        if ep.actions is not None and ep.actions.shape[1] != action_dim:
+            raise ValueError(
+                f"episode {ei} has action dim {ep.actions.shape[1]} but the dataset "
+                f"uses {action_dim}; all episodes must agree"
+            )
 
     states: list[list[float]] = []
     actions: list[list[float]] = []
@@ -360,6 +452,11 @@ def write_lerobot_dataset(
             }
         )
         cursor += n
+
+    # --- video first: encoding is the step most likely to fail, so do it before
+    # any metadata lands on disk and a failure cannot leave a half-written,
+    # structurally-valid-but-videoless dataset behind. ---
+    _encode_video(av, root / "videos" / video_key / "chunk-000" / "file-000.mp4", all_frames, fps)
 
     # --- info.json ---
     info = {
@@ -421,12 +518,14 @@ def write_lerobot_dataset(
     )
 
     # --- provenance sidecar (plan §8d: keep synthetic episodes distinguishable) ---
-    provenance = [ep.metadata for ep in episodes]
+    # Reader-owned keys are recomputed on every read; persisting them here would
+    # bake in stale values from the *source* dataset.
+    reader_owned = {"episode_index", "source_dataset", "video_key"}
+    provenance = [
+        {k: v for k, v in ep.metadata.items() if k not in reader_owned} for ep in episodes
+    ]
     (root / "meta" / "lmfao_provenance.json").write_text(
-        json.dumps(provenance, indent=1, default=str)
+        json.dumps(provenance, indent=1, default=_json_default)
     )
-
-    # --- video ---
-    _encode_video(av, root / "videos" / video_key / "chunk-000" / "file-000.mp4", all_frames, fps)
     return root
 

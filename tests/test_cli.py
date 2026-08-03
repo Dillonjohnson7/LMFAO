@@ -43,3 +43,66 @@ def test_generate_disabled_is_pure_adjust(tmp_path):
 def test_generate_requires_input_without_demo(tmp_path):
     rc = main(["generate", "--output", str(tmp_path / "out")])
     assert rc == 2  # missing --input
+
+
+def _run(tmp_path, cfg_text, capsys=None):
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(cfg_text)
+    return main(["generate", "--demo", "--config", str(cfg_path), "--output", str(tmp_path / "out")])
+
+
+def test_malformed_json_config_is_clean_error(tmp_path, capsys):
+    rc = _run(tmp_path, '{"miniworld": {,,}')
+    assert rc == 2
+    assert "error:" in capsys.readouterr().err
+
+
+def test_non_object_config_is_clean_error(tmp_path, capsys):
+    rc = _run(tmp_path, "[1, 2, 3]")
+    assert rc == 2
+    assert "error:" in capsys.readouterr().err
+
+
+def test_unknown_toplevel_config_key_is_rejected(tmp_path, capsys):
+    rc = _run(tmp_path, json.dumps({"minworld": {"enabled": True}, "pipeline": []}))
+    assert rc == 2
+    assert "minworld" in capsys.readouterr().err
+
+
+def test_unknown_miniworld_field_is_clean_error(tmp_path, capsys):
+    rc = _run(tmp_path, json.dumps({"miniworld": {"enabled": True, "foo": 1}}))
+    assert rc == 2
+    assert "foo" in capsys.readouterr().err
+
+
+def test_unknown_augmenter_is_clean_error(tmp_path, capsys):
+    rc = _run(tmp_path, json.dumps({"pipeline": [{"name": "lighting.nope", "params": {}}]}))
+    assert rc == 2
+    assert "lighting.nope" in capsys.readouterr().err
+
+
+def test_missing_config_file_is_clean_error(tmp_path, capsys):
+    rc = main(["generate", "--demo", "--config", str(tmp_path / "nope.json"),
+               "--output", str(tmp_path / "out")])
+    assert rc == 2
+    assert "error:" in capsys.readouterr().err
+
+
+def test_inspect_summarizes_dataset(tmp_path, capsys):
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"miniworld": {"enabled": True, "n_synthetic": 2, "seed": 1}}))
+    out = tmp_path / "out"
+    assert main(["generate", "--demo", "--config", str(cfg), "--output", str(out)]) == 0
+    capsys.readouterr()
+
+    assert main(["inspect", str(out), "--episodes"]) == 0
+    text = capsys.readouterr().out
+    assert "episodes:  5 on disk" in text
+    assert "2 synthetic / 3 real" in text
+    assert "episode 4:" in text
+
+
+def test_inspect_non_dataset_is_clean_error(tmp_path, capsys):
+    rc = main(["inspect", str(tmp_path)])
+    assert rc == 2
+    assert "meta/info.json" in capsys.readouterr().err

@@ -31,8 +31,50 @@ have.
 ## Install
 
 ```bash
-pip install -e ".[dev]"
+git clone https://github.com/Dillonjohnson7/LMFAO.git
+cd LMFAO
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev,lerobot]"
 ```
+
+The core library is numpy-only. The `lerobot` extra adds `pyarrow` and `av` so
+the CLI can read and write real LeRobot v3 datasets (video shards + parquet).
+
+## Quickstart: the `lmfao` CLI
+
+The CLI is native to the LeRobot v3 on-disk format. Point it at any dataset
+recorded with LeRobot (or downloaded from the Hugging Face hub):
+
+```bash
+# What is in this dataset? (episodes, camera streams, tasks, missing shards)
+lmfao inspect ~/data/my_teleop_dataset --episodes
+
+# Try the whole GENERATE + ADJUST flow with zero setup (built-in toy scene)
+lmfao generate --demo --output out/demo --config config.json
+
+# Augment a real dataset: 2 synthetic novel-view episodes per real episode,
+# plus lighting seasoning, written back out as a LeRobot dataset
+lmfao generate --input ~/data/my_teleop_dataset --output out/augmented \
+    --config config.json --assume-poses --seed 7
+```
+
+where `config.json` combines the miniworld (GENERATE) and pipeline (ADJUST)
+halves:
+
+```json
+{
+  "miniworld": {"enabled": true, "n_synthetic": 2, "seed": 7},
+  "pipeline": [{"name": "lighting.brightness", "params": {}, "probability": 1.0}]
+}
+```
+
+Configs are validated before any data is loaded, so typos fail in milliseconds
+with a one-line error. Synthetic episodes are stamped in a
+`meta/lmfao_provenance.json` sidecar, so they stay distinguishable from real
+footage on read-back (`lmfao inspect` shows the split). LeRobot datasets carry
+no camera poses; `--assume-poses` attaches an approximate arc so the reference
+renderer can generate novel views (`--work-size` controls its working
+resolution, default 96 px).
 
 ## Available augmentations
 

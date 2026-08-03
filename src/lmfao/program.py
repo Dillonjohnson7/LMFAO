@@ -86,6 +86,14 @@ def generate_training_set(
         using the numpy reference backend.
     """
     real = list(real_episodes)
+    # Reject unknown top-level keys outright: a typo like "minworld" would
+    # otherwise silently disable generation while the run reports success.
+    unknown = set(config) - {"miniworld", "pipeline"}
+    if unknown:
+        extra = ", ".join(sorted(unknown))
+        raise ValueError(
+            f"unknown top-level config keys: {extra} (expected 'miniworld' and/or 'pipeline')"
+        )
     # A missing miniworld block means the switch is simply not present, so the
     # synthetic branch stays dark and the result is pure v1. Only an explicit
     # block can turn generation on (and it still honours its own `enabled`).
