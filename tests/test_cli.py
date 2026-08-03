@@ -106,3 +106,41 @@ def test_inspect_non_dataset_is_clean_error(tmp_path, capsys):
     rc = main(["inspect", str(tmp_path)])
     assert rc == 2
     assert "meta/info.json" in capsys.readouterr().err
+
+
+def test_inspect_malformed_info_json_is_clean_error(tmp_path, capsys):
+    (tmp_path / "meta").mkdir()
+    (tmp_path / "meta" / "info.json").write_text("{not json")
+    rc = main(["inspect", str(tmp_path)])
+    assert rc == 2
+    assert "error:" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("flag,value", [("--seed", "-1"), ("--limit", "-1"), ("--max-frames", "0")])
+def test_generate_rejects_bad_numeric_flags(tmp_path, capsys, flag, value):
+    out = tmp_path / "out"
+    rc = main(["generate", "--demo", flag, value, "--output", str(out)])
+    assert rc == 2
+    assert "error:" in capsys.readouterr().err
+
+
+def test_generate_refuses_existing_dataset_without_overwrite(tmp_path, capsys):
+    cfg = tmp_path / "c.json"
+    cfg.write_text(json.dumps({"miniworld": {"enabled": False}, "pipeline": []}))
+    out = tmp_path / "out"
+    assert main(["generate", "--demo", "--config", str(cfg), "--output", str(out)]) == 0
+    capsys.readouterr()
+    rc = main(["generate", "--demo", "--config", str(cfg), "--output", str(out)])
+    assert rc == 2
+    assert "already contains a dataset" in capsys.readouterr().err
+    # With --overwrite it succeeds and stays self-consistent.
+    assert main(["generate", "--demo", "--config", str(cfg), "--output", str(out), "--overwrite"]) == 0
+    assert len(read_lerobot_dataset(out)) == 3
+
+
+def test_negative_seed_in_config_is_clean_error(tmp_path, capsys):
+    cfg = tmp_path / "c.json"
+    cfg.write_text(json.dumps({"miniworld": {"enabled": True, "n_synthetic": 1, "seed": -3}}))
+    rc = main(["generate", "--demo", "--config", str(cfg), "--output", str(tmp_path / "out")])
+    assert rc == 2
+    assert "error:" in capsys.readouterr().err

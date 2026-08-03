@@ -115,7 +115,12 @@ def generate_training_set(
 
 
 def _derive_seed(seed: int | None, index: int) -> int | None:
-    return None if seed is None else seed + index
+    if seed is None:
+        return None
+    # `seed + index` makes adjacent base seeds collide: run(S).episode[i+1] would
+    # reuse run(S+1).episode[i]'s stream. Hash (seed, index) through SeedSequence
+    # so distinct base seeds yield disjoint per-episode streams.
+    return int(np.random.SeedSequence([seed, index]).generate_state(1)[0])
 
 
 def _season(episode: Episode, pipeline_config: list, seed: int | None) -> Episode:

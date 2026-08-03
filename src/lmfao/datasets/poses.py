@@ -32,23 +32,33 @@ def assume_camera_track(
 
     The camera sweeps a shallow arc of ``arc`` radians over the scene at a fixed
     ``height``, always looking at ``target`` — the same shape as the toy demo's
-    wrist-cam sweep. Existing poses/intrinsics are left untouched.
+    wrist-cam sweep. Existing poses/intrinsics are left untouched; only the
+    missing field is synthesized, so measured calibration is never overwritten.
     """
     if episode.camera_poses is not None and episode.intrinsics is not None:
         return episode
 
-    n = episode.num_frames
-    poses = np.zeros((n, 4, 4))
-    tgt = np.array(target, dtype=float)
-    for i in range(n):
-        frac = 0.0 if n == 1 else i / (n - 1)
-        ang = -arc / 2 + arc * frac
-        eye = np.array([np.sin(ang) * radius, -0.5 + 0.2 * frac, height])
-        poses[i] = look_at(eye, tgt)
+    if episode.camera_poses is not None:
+        poses = episode.camera_poses
+        synthesized_poses = False
+    else:
+        synthesized_poses = True
+        n = episode.num_frames
+        poses = np.zeros((n, 4, 4))
+        tgt = np.array(target, dtype=float)
+        for i in range(n):
+            frac = 0.0 if n == 1 else i / (n - 1)
+            ang = -arc / 2 + arc * frac
+            eye = np.array([np.sin(ang) * radius, -0.5 + 0.2 * frac, height])
+            poses[i] = look_at(eye, tgt)
 
-    intr = default_intrinsics(episode.width, episode.height, fov_deg)
+    if episode.intrinsics is not None:
+        intr = episode.intrinsics
+    else:
+        intr = default_intrinsics(episode.width, episode.height, fov_deg)
     meta = dict(episode.metadata)
-    meta["assumed_poses"] = True
+    if synthesized_poses:
+        meta["assumed_poses"] = True
     return Episode(
         frames=episode.frames,
         state=episode.state,

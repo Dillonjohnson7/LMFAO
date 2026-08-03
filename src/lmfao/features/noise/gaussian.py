@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -36,8 +37,8 @@ class GaussianNoise(Augmenter):
     device: str = "auto"
 
     def __post_init__(self) -> None:
-        if self.sigma < 0:
-            raise ValueError("sigma must be non-negative")
+        if not (math.isfinite(self.sigma) and self.sigma >= 0):
+            raise ValueError("sigma must be a non-negative, finite number")
 
     def apply(self, video: Video, metadata: Metadata, rng: np.random.Generator) -> tuple[Video, Metadata]:
         augmented, device = add_noise(video, "gaussian", self.sigma, rng, self.device)

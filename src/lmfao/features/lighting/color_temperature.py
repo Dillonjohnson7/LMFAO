@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -33,9 +34,11 @@ class ColorTemperatureShift(Augmenter):
         if not -1.0 <= self.min_shift <= self.max_shift <= 1.0:
             raise ValueError("min_shift/max_shift must satisfy -1.0 <= min_shift <= max_shift <= 1.0")
         if self.shift is not None:
+            if not math.isfinite(self.shift):
+                raise ValueError("shift must be a finite number")
             self.shift = float(np.clip(self.shift, -1.0, 1.0))
-        if self.intensity < 0.0:
-            raise ValueError("intensity must be non-negative")
+        if not (math.isfinite(self.intensity) and self.intensity >= 0.0):
+            raise ValueError("intensity must be a non-negative, finite number")
 
     def apply(self, video: Video, metadata: Metadata, rng: np.random.Generator) -> tuple[Video, Metadata]:
         shift = float(np.clip(sample_range(self.shift, self.min_shift, self.max_shift, rng), -1.0, 1.0))

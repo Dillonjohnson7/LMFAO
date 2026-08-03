@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -47,10 +48,15 @@ class AugmentationPipeline:
     def __call__(self, video: Video, metadata: Mapping[str, Any] | None = None) -> tuple[Video, Metadata]:
         rng = np.random.default_rng(self.seed)
         output = video
-        run_metadata: Metadata = dict(metadata or {})
+        # Deep-copy so seasoning never mutates the caller's (episode's) metadata.
+        run_metadata: Metadata = copy.deepcopy(dict(metadata or {}))
 
         applied: list[str] = []
         skipped: list[str] = []
+        # augmentation_params is keyed by name (last write wins), so a repeated
+        # augmenter would lose its earlier application; history keeps every one
+        # in order so the full transform stays reproducible from metadata.
+        history: list[dict[str, Any]] = []
         for step in self.steps:
             augmenter = step.augmenter
             if rng.random() > step.probability:
@@ -59,7 +65,10 @@ class AugmentationPipeline:
 
             output, run_metadata = augmenter(output, run_metadata, rng)
             applied.append(augmenter.name)
+            params = run_metadata.get("augmentation_params", {}).get(augmenter.name)
+            history.append({"name": augmenter.name, "params": copy.deepcopy(params)})
 
         run_metadata["augmentations"] = applied
         run_metadata["skipped_augmentations"] = skipped
+        run_metadata["augmentation_history"] = history
         return output, run_metadata

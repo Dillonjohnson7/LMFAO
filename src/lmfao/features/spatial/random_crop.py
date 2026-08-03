@@ -32,7 +32,10 @@ class RandomCrop(Augmenter):
         self.pad = int(self.pad)
         if self.pad <= 0:
             raise ValueError("pad must be > 0")
-        self.pad_mode = pad_mode_for_numpy(self.pad_mode)
+        # Validate the user-facing name but keep it as given, so metadata records
+        # the value the API accepts (e.g. "zero"), not numpy's internal
+        # "constant"; the translation happens at the np.pad call site.
+        pad_mode_for_numpy(self.pad_mode)
 
     def apply(self, video: Video, metadata: Metadata, rng: np.random.Generator) -> tuple[Video, Metadata]:
         num_frames, height, width = video.shape[0], video.shape[1], video.shape[2]
@@ -45,7 +48,7 @@ class RandomCrop(Augmenter):
         padded = np.pad(
             video,
             ((0, 0), (self.pad, self.pad), (self.pad, self.pad), (0, 0)),
-            mode=self.pad_mode,
+            mode=pad_mode_for_numpy(self.pad_mode),
         )
 
         augmented = np.empty_like(video)

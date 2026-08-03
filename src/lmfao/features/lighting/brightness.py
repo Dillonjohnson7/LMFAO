@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -33,8 +34,8 @@ class BrightnessScale(Augmenter):
             "min_factor",
             "max_factor",
         )
-        if self.factor is not None and self.factor <= 0.0:
-            raise ValueError("factor must be > 0.0")
+        if self.factor is not None and not (math.isfinite(self.factor) and self.factor > 0.0):
+            raise ValueError("factor must be a positive, finite number")
 
     def apply(self, video: Video, metadata: Metadata, rng: np.random.Generator) -> tuple[Video, Metadata]:
         factor = sample_range(self.factor, self.min_factor, self.max_factor, rng)

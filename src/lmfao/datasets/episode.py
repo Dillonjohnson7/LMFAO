@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -56,6 +57,9 @@ class Episode:
         if frames.shape[-1] not in (1, 3, 4):
             raise ValueError("frames channels must be grayscale, RGB, or RGBA")
         self.frames = frames
+
+        if not (math.isfinite(self.fps) and self.fps > 0):
+            raise ValueError(f"fps must be a positive, finite number, got {self.fps}")
 
         f = frames.shape[0]
         if self.state is not None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -73,7 +74,13 @@ class MiniWorldGenerator:
 
         synthetic: list[Episode] = []
         for i in range(self.config.n_synthetic):
-            source = sources[i % len(sources)]
+            # Decouple the two indices so consecutive episodes walk the full
+            # (source, offset) cartesian product before repeating; advancing both
+            # in lockstep would emit byte-identical duplicates whenever
+            # n_synthetic exceeds lcm(n_sources, n_offsets). The camera offset is
+            # the dominant source of visual variation, so vary it on the fast
+            # axis to maximise distinct views even when sources look alike.
+            source = sources[(i // len(offsets)) % len(sources)]
             offset = offsets[i % len(offsets)]
             key = id(source)
             if key not in scene_cache:
@@ -108,6 +115,9 @@ class MiniWorldGenerator:
         moved_puck = None
         if puck_shift is not None and not scene.puck.is_empty:
             moved_puck = scene.puck.translated(puck_shift)
+        # The shift only actually happened if a puck was segmented to move; record
+        # None otherwise so provenance never claims an edit that had no effect.
+        applied_shift = puck_shift if moved_puck is not None else None
         cloud = scene.render_cloud(moved_puck)
 
         num_frames = source.num_frames
@@ -130,7 +140,7 @@ class MiniWorldGenerator:
             gripper_uv.append(self._beacon_uv(self._gripper_world(source, f), novel_cam))
             puck_uv.append(self._beacon_uv(self._puck_world(source, f, scene, moved_puck, puck_shift), novel_cam))
 
-        metadata = self._provenance(source, offset, puck_shift, hole_fracs, gripper_uv, puck_uv, variant)
+        metadata = self._provenance(source, offset, applied_shift, hole_fracs, gripper_uv, puck_uv, variant)
         return Episode(
             frames=out_frames,
             state=None if source.state is None else source.state.copy(),
@@ -187,7 +197,13 @@ class MiniWorldGenerator:
         puck_uv: list,
         variant: int,
     ) -> dict:
-        metadata = {k: v for k, v in source.metadata.items() if k not in ("miniworld", "synthetic")}
+        # Deep-copy carried-over values so a synthetic episode never aliases the
+        # source's nested mutables (state/actions/intrinsics are already copied).
+        metadata = {
+            k: copy.deepcopy(v)
+            for k, v in source.metadata.items()
+            if k not in ("miniworld", "synthetic")
+        }
         record = {
             "source_task": source.task,
             "variant": int(variant),

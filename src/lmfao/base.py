@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, MutableMapping
 from typing import Any
@@ -29,7 +30,9 @@ class Augmenter(ABC):
     ) -> tuple[Video, Metadata]:
         self.validate_video(video)
         run_rng = rng if rng is not None else np.random.default_rng()
-        run_metadata: Metadata = dict(metadata or {})
+        # Deep-copy so recording our own augmentation_params never mutates the
+        # caller's metadata (its nested dicts would otherwise be aliased).
+        run_metadata: Metadata = copy.deepcopy(dict(metadata or {}))
         return self.apply(video, run_metadata, run_rng)
 
     @abstractmethod

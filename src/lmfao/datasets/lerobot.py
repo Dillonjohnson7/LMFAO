@@ -181,6 +181,8 @@ def read_lerobot_dataset(
         wanted = set(int(e) for e in episodes)
         records = [r for r in records if int(r["episode_index"]) in wanted]
     if limit is not None:
+        if int(limit) < 0:
+            raise ValueError(f"limit must be non-negative, got {limit}")
         records = records[: int(limit)]
 
     out: list[Episode] = []
@@ -390,6 +392,39 @@ def write_lerobot_dataset(
             "width and height. Crop or pad the frames to even dimensions first."
         )
     fps = float(ref.fps)
+    for ep in episodes:
+        if abs(float(ep.fps) - fps) > 1e-6:
+            raise ValueError(
+                f"all episodes must share fps to write one shard: got {ep.fps} and {fps}. "
+                "The video is one stream, so a single frame rate applies."
+            )
+    if sum(ep.num_frames for ep in episodes) == 0:
+        raise ValueError("refusing to write a dataset with zero frames")
+
+    # State/actions presence must be consistent: mixing None with real arrays
+    # would silently fabricate all-zero rows for the None episodes on read-back.
+    has_state = {ep.state is not None for ep in episodes}
+    if len(has_state) > 1:
+        raise ValueError(
+            "some episodes have state and others do not; write only episodes that "
+            "agree on state presence so absence is not silently fabricated as zeros"
+        )
+    has_actions = {ep.actions is not None for ep in episodes}
+    if len(has_actions) > 1:
+        raise ValueError(
+            "some episodes have actions and others do not; write only episodes that "
+            "agree on action presence so absence is not silently fabricated as zeros"
+        )
+
+    # Replace any dataset already at this root: the writer emits a single
+    # chunk-000/file-000 shard, so stale multi-shard trees left in place would
+    # make _episode_records glob a hybrid of new and old records.
+    for sub in ("data", "videos", "meta"):
+        existing = root / sub
+        if existing.exists():
+            import shutil
+
+            shutil.rmtree(existing)
 
     # --- concatenate frames + per-frame rows ---
     all_frames = np.concatenate([_to_uint8_rgb(ep.frames) for ep in episodes], axis=0)

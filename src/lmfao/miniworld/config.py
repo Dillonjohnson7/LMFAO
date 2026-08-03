@@ -23,12 +23,19 @@ class CameraOffset:
         if isinstance(value, CameraOffset):
             return value
         if isinstance(value, Mapping):
+            extra = set(value) - {"translation", "yaw", "pitch"}
+            if extra:
+                raise ValueError(f"unknown camera offset fields: {sorted(extra)}")
+            t = tuple(float(x) for x in value.get("translation", (0.0, 0.0, 0.0)))
+            if len(t) > 3:
+                raise ValueError(f"camera offset translation must have at most 3 components, got {len(t)}")
+            translation = t + (0.0,) * (3 - len(t))
             return cls(
-                translation=tuple(value.get("translation", (0.0, 0.0, 0.0))),  # type: ignore[arg-type]
+                translation=translation,  # type: ignore[arg-type]
                 yaw=float(value.get("yaw", 0.0)),
                 pitch=float(value.get("pitch", 0.0)),
             )
-        seq = list(value)
+        seq = [float(x) for x in value]
         translation = tuple(seq[:3]) + (0.0,) * (3 - len(seq[:3]))
         yaw = float(seq[3]) if len(seq) > 3 else 0.0
         pitch = float(seq[4]) if len(seq) > 4 else 0.0
@@ -86,6 +93,12 @@ class MiniWorldConfig:
         puck_color = data.pop("puck_color", None)
         if puck_color is not None:
             puck_color = tuple(float(c) for c in puck_color)
+        seed = data.pop("seed", None)
+        if seed is not None:
+            if isinstance(seed, bool) or not isinstance(seed, int):
+                raise ValueError("seed must be a non-negative integer or null")
+            if seed < 0:
+                raise ValueError("seed must be non-negative")
         known = {
             "enabled": bool(data.pop("enabled", True)),
             "n_synthetic": int(data.pop("n_synthetic", 8)),
@@ -98,7 +111,7 @@ class MiniWorldConfig:
             "puck_color": puck_color,
             "puck_color_tol": float(data.pop("puck_color_tol", 0.25)),
             "background": tuple(data.pop("background", (0.0, 0.0, 0.0))),
-            "seed": data.pop("seed", None),
+            "seed": seed,
         }
         if data:
             extra = ", ".join(sorted(data))

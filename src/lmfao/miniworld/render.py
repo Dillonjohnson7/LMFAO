@@ -41,7 +41,9 @@ class PointSplatRenderer:
 
         if not cloud.is_empty:
             uv, z = camera.project(cloud.means)
-            in_front = z > self.near
+            # Exclude non-finite gaussians (inf/NaN mean) the same way NaN is
+            # already dropped, so a degenerate point can't crash _splat.
+            in_front = np.isfinite(z) & np.isfinite(uv).all(axis=1) & (z > self.near)
             radius = camera.fx * cloud.scales / np.maximum(z, self.near)
             radius = np.clip(radius, 0.5, self.max_radius_px)
 

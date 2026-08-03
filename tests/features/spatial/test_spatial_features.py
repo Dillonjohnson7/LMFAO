@@ -62,7 +62,7 @@ def test_random_crop_records_metadata():
         "shift_x": [2, 2, 2, 2],
         "shift_y": [-1, -1, -1, -1],
         "pad": 4,
-        "pad_mode": "constant",
+        "pad_mode": "zero",
     }
 
 

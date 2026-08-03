@@ -184,3 +184,39 @@ def test_missing_video_shard_gives_clear_error(tmp_path):
     shard.unlink()
     with pytest.raises(ValueError, match="video shard"):
         read_lerobot_dataset(tmp_path)
+
+
+def test_mixed_fps_rejected(tmp_path):
+    f = np.zeros((5, 32, 32, 3), np.uint8)
+    eps = [Episode(frames=f, fps=30.0), Episode(frames=f, fps=120.0)]
+    with pytest.raises(ValueError, match="share fps"):
+        write_lerobot_dataset(eps, tmp_path)
+
+
+def test_inconsistent_state_presence_rejected(tmp_path):
+    f = np.zeros((5, 32, 32, 3), np.uint8)
+    st = np.arange(20.0).reshape(5, 4)
+    eps = [Episode(frames=f, state=st, actions=st), Episode(frames=f)]
+    with pytest.raises(ValueError, match="state"):
+        write_lerobot_dataset(eps, tmp_path)
+
+
+def test_zero_frame_write_rejected(tmp_path):
+    ep = Episode(frames=np.zeros((0, 32, 32, 3), np.uint8), fps=30.0)
+    with pytest.raises(ValueError, match="zero frames"):
+        write_lerobot_dataset([ep], tmp_path)
+
+
+def test_overwrite_replaces_stale_shards(tmp_path):
+    # Write a 3-episode dataset, then overwrite with a 1-episode one and confirm
+    # no stale episode records survive to make a hybrid dataset.
+    write_lerobot_dataset([_episode(), _episode(), _episode()], tmp_path)
+    write_lerobot_dataset([_episode()], tmp_path)
+    back = read_lerobot_dataset(tmp_path)
+    assert len(back) == 1
+
+
+def test_negative_limit_rejected(tmp_path):
+    write_lerobot_dataset([_episode(), _episode()], tmp_path)
+    with pytest.raises(ValueError, match="non-negative"):
+        read_lerobot_dataset(tmp_path, limit=-1)

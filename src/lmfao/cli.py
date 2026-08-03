@@ -142,9 +142,22 @@ def _miniworld_cfg(config: dict) -> MiniWorldConfig:
 
 
 def _generate(args: argparse.Namespace) -> int:
+    if args.seed is not None and args.seed < 0:
+        raise CliError("--seed must be non-negative")
+    if args.limit is not None and args.limit < 0:
+        raise CliError("--limit must be non-negative")
+    if args.max_frames is not None and args.max_frames < 1:
+        raise CliError("--max-frames must be at least 1")
+
     config = _load_config(args.config)
     mw = _miniworld_cfg(config)
     wants_generate = mw.enabled and mw.n_synthetic > 0
+
+    out = Path(args.output)
+    if (out / "meta" / "info.json").exists() and not args.overwrite:
+        raise CliError(
+            f"{out} already contains a dataset; pass --overwrite to replace it"
+        )
 
     if args.demo:
         real = _demo_episodes()
@@ -191,7 +204,6 @@ def _generate(args: argparse.Namespace) -> int:
     summary = training_set.summary()
     print(f"training set: {summary}")
 
-    out = Path(args.output)
     try:
         write_lerobot_dataset(training_set.episodes, out, video_key=args.write_video_key)
     except (OSError, ValueError) as e:
@@ -215,7 +227,10 @@ def _inspect(args: argparse.Namespace) -> int:
 
     from lmfao.datasets.lerobot import _episode_records, _read_tasks, _video_keys
 
-    info = json.loads(info_path.read_text())
+    try:
+        info = json.loads(info_path.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        raise CliError(f"cannot read {info_path}: {e}") from e
     records = _episode_records(root, pq)
     tasks = _read_tasks(root, pq)
     keys = _video_keys(info)
@@ -247,7 +262,10 @@ def _inspect(args: argparse.Namespace) -> int:
 
     prov_path = root / "meta" / "lmfao_provenance.json"
     if prov_path.exists():
-        prov = json.loads(prov_path.read_text())
+        try:
+            prov = json.loads(prov_path.read_text())
+        except (OSError, json.JSONDecodeError) as e:
+            raise CliError(f"cannot read {prov_path}: {e}") from e
         synth = sum(1 for p in prov if p.get("synthetic"))
         print(f"lmfao:     provenance sidecar present — "
               f"{synth} synthetic / {len(prov) - synth} real episode(s)")
@@ -285,6 +303,8 @@ def build_parser() -> argparse.ArgumentParser:
                      help="attach an assumed camera trajectory so GENERATE runs on pose-less data")
     gen.add_argument("--work-size", type=int, default=96,
                      help="max frame side for the reference GENERATE renderer (0 = full res)")
+    gen.add_argument("--overwrite", action="store_true",
+                     help="replace an existing dataset at --output instead of erroring")
     gen.set_defaults(func=_generate)
     return parser
 
