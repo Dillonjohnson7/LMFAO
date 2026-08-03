@@ -144,3 +144,40 @@ def test_negative_seed_in_config_is_clean_error(tmp_path, capsys):
     rc = main(["generate", "--demo", "--config", str(cfg), "--output", str(tmp_path / "out")])
     assert rc == 2
     assert "error:" in capsys.readouterr().err
+
+
+def test_augment_demo_writes_variants(tmp_path):
+    cfg = tmp_path / "pipe.json"
+    cfg.write_text(json.dumps([
+        {"name": "lighting.brightness", "params": {"factor": 0.7}, "probability": 1.0},
+    ]))
+    out = tmp_path / "out"
+    rc = main(["augment", "--demo", "--config", str(cfg), "--variants", "2",
+               "--include-original", "--seed", "3", "--output", str(out)])
+    assert rc == 0
+    back = read_lerobot_dataset(out)
+    assert len(back) == 9  # 3 demo originals + 3*2 variants
+    assert sum(1 for e in back if e.metadata.get("augmented")) == 6
+    assert all(not e.is_synthetic for e in back)  # augment never synthesizes
+
+
+def test_augment_accepts_bare_list_or_pipeline_object(tmp_path):
+    obj = tmp_path / "obj.json"
+    obj.write_text(json.dumps({"pipeline": [{"name": "noise.gaussian", "params": {"sigma": 0.02}}]}))
+    rc = main(["augment", "--demo", "--config", str(obj), "--output", str(tmp_path / "o1")])
+    assert rc == 0
+
+
+def test_augment_requires_config(tmp_path, capsys):
+    rc = main(["augment", "--demo", "--output", str(tmp_path / "o")])
+    assert rc == 2
+    assert "config" in capsys.readouterr().err
+
+
+def test_augment_rejects_bad_variants(tmp_path, capsys):
+    cfg = tmp_path / "p.json"
+    cfg.write_text(json.dumps([{"name": "noise.gaussian", "params": {}}]))
+    rc = main(["augment", "--demo", "--config", str(cfg), "--variants", "0",
+               "--output", str(tmp_path / "o")])
+    assert rc == 2
+    assert "variants" in capsys.readouterr().err

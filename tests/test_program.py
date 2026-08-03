@@ -1,8 +1,58 @@
 import numpy as np
+import pytest
 from conftest import PUCK_COLOR, build_episode
 
 from lmfao import generate_training_set
-from lmfao.program import TrainingSet
+from lmfao.datasets import Episode
+from lmfao.program import TrainingSet, augment_episodes
+
+_PIPE = [
+    {"name": "lighting.brightness", "params": {"factor": 0.5}},
+    {"name": "noise.gaussian", "params": {"sigma": 0.02}},
+]
+
+
+def _plain(n=2):
+    return [Episode(frames=np.full((4, 8, 8, 3), 100, np.uint8), state=np.zeros((4, 3)),
+                    fps=30.0, task="t", metadata={"episode_index": i}) for i in range(n)]
+
+
+def test_augment_variants_and_originals_counts():
+    ts = augment_episodes(_plain(2), _PIPE, variants=3, seed=5, include_original=True)
+    assert len(ts.episodes) == 8  # 2 originals + 2*3 variants
+    aug = [e for e in ts.episodes if e.metadata.get("augmented")]
+    orig = [e for e in ts.episodes if not e.metadata.get("augmented")]
+    assert len(aug) == 6 and len(orig) == 2
+
+
+def test_augment_applies_pipeline_and_preserves_state():
+    ts = augment_episodes(_plain(1), _PIPE, variants=1, seed=1)
+    ep = ts.episodes[0]
+    assert abs(float(ep.frames.mean()) - 50) < 4  # brightness 0.5 of 100
+    assert ep.state is not None and ep.state.shape == (4, 3)
+    assert [h["name"] for h in ep.metadata["augmentation_history"]] == \
+        ["lighting.brightness", "noise.gaussian"]
+
+
+def test_augment_variants_are_independent_but_reproducible():
+    a = augment_episodes(_plain(1), _PIPE, variants=2, seed=5)
+    b = augment_episodes(_plain(1), _PIPE, variants=2, seed=5)
+    assert not np.array_equal(a.episodes[0].frames, a.episodes[1].frames)  # variants differ
+    assert np.array_equal(a.episodes[0].frames, b.episodes[0].frames)  # reproducible
+
+
+def test_augment_does_not_mutate_source_episodes():
+    src = _plain(1)
+    before = src[0].frames.copy()
+    augment_episodes(src, _PIPE, variants=2, seed=1)
+    assert np.array_equal(src[0].frames, before)
+
+
+def test_augment_rejects_empty_pipeline_and_bad_variants():
+    with pytest.raises(ValueError, match="empty"):
+        augment_episodes(_plain(1), [], variants=1)
+    with pytest.raises(ValueError, match="variants"):
+        augment_episodes(_plain(1), _PIPE, variants=0)
 
 
 def _reals(n=3):

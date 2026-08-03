@@ -114,6 +114,59 @@ def generate_training_set(
     return TrainingSet(episodes=seasoned)
 
 
+def augment_episodes(
+    episodes: Sequence[Episode],
+    pipeline_config: Sequence[Mapping[str, Any]],
+    *,
+    variants: int = 1,
+    seed: int | None = None,
+    include_original: bool = False,
+) -> TrainingSet:
+    """Apply the ADJUST pixel pipeline to real episodes (no miniworld synthesis).
+
+    Unlike :func:`generate_training_set`, this never reconstructs or re-renders:
+    it seasons the real frames at their native resolution, so the output is real
+    footage, just relit / occluded / re-cropped. ``variants`` produces that many
+    independently-seasoned copies of each episode (each with its own RNG stream),
+    which is how one recorded demo becomes several training clips.
+
+    Parameters
+    ----------
+    variants:
+        Number of augmented copies to emit per source episode (>= 1).
+    seed:
+        Base seed; each (variant, episode) pair gets a disjoint derived stream.
+    include_original:
+        When True, the un-augmented source episodes are emitted first (stamped
+        ``augmented=False``) so the output is originals + augmented variants.
+    """
+    if variants < 1:
+        raise ValueError("variants must be >= 1")
+    steps = list(pipeline_config or [])
+    if not steps:
+        raise ValueError("no augmentations configured: the pipeline is empty")
+
+    eps = list(episodes)
+    out: list[Episode] = []
+    if include_original:
+        for ep in eps:
+            keep = ep.with_frames(ep.frames)
+            keep.metadata["augmented"] = False
+            out.append(keep)
+    for v in range(variants):
+        for i, ep in enumerate(eps):
+            # A distinct index per (variant, episode) so no two seasonings share
+            # an RNG stream, even across variants.
+            derived = _derive_seed(seed, v * len(eps) + i)
+            aug = _season(ep, steps, derived)
+            aug.metadata["augmented"] = True
+            if variants > 1:
+                aug.metadata["variant"] = int(v)
+                aug.metadata["source_episode"] = int(i)
+            out.append(aug)
+    return TrainingSet(episodes=out)
+
+
 def _derive_seed(seed: int | None, index: int) -> int | None:
     if seed is None:
         return None

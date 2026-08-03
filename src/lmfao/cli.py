@@ -1,17 +1,18 @@
 """``lmfao`` command-line interface.
 
-Two subcommands, both native to the LeRobot v3 on-disk format:
+Three subcommands, all native to the LeRobot v3 on-disk format:
 
     lmfao inspect  <lerobot-dataset>
+    lmfao augment  --input <lerobot-dataset> --output <dir> --config pipeline.json
     lmfao generate --input <lerobot-dataset> --output <dir> --config config.json
     lmfao generate --demo --output <dir>
 
 ``inspect`` summarizes any LeRobot dataset (episodes, streams, tasks, fps, and
-LMFAO provenance if present) without decoding video. ``generate`` loads real
-episodes (from a LeRobot dataset, or the built-in toy scene with ``--demo``),
-passes them through ``generate_training_set`` (miniworld GENERATE + pipeline
-ADJUST, both driven by the JSON config), and writes the resulting training set
-back out as a LeRobot-style dataset.
+LMFAO provenance if present) without decoding video. ``augment`` runs only the
+ADJUST pixel pipeline over the real frames at their native resolution -- so the
+output is real, full-res footage, just seasoned -- and can emit several
+independently-seasoned variants per episode. ``generate`` additionally runs the
+miniworld GENERATE half (synthetic novel-view episodes) alongside ADJUST.
 
 Config JSON is the same combined schema ``generate_training_set`` consumes::
 
@@ -38,7 +39,7 @@ from lmfao.datasets import Episode, read_lerobot_dataset, write_lerobot_dataset
 from lmfao.datasets.poses import assume_camera_track
 from lmfao.miniworld import MiniWorldConfig, default_intrinsics, look_at
 from lmfao.pipeline import AugmentationPipeline
-from lmfao.program import generate_training_set
+from lmfao.program import augment_episodes, generate_training_set
 
 
 class CliError(Exception):
@@ -136,9 +137,104 @@ def _load_config(path: str | None) -> dict:
     return data
 
 
+def _load_pipeline_config(path: str | None) -> list:
+    """Load and validate an augment config: a bare list of augmentation steps,
+    or an object with a ``pipeline`` list (the combined generate config works too,
+    its ``miniworld`` block is ignored here)."""
+    if path is None:
+        raise CliError("augment needs --config with a pipeline of augmentation steps")
+    try:
+        text = Path(path).read_text()
+    except OSError as e:
+        raise CliError(f"cannot read config {path}: {e}") from e
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise CliError(f"config {path} is not valid JSON: {e}") from e
+
+    if isinstance(data, list):
+        steps = data
+    elif isinstance(data, dict):
+        if "pipeline" not in data:
+            raise CliError("augment config object must contain a 'pipeline' list")
+        steps = data["pipeline"]
+        mw = data.get("miniworld")
+        if isinstance(mw, dict) and mw.get("enabled"):
+            print("note: augment ignores the 'miniworld' block; "
+                  "use `lmfao generate` to synthesize novel views")
+    else:
+        raise CliError("augment config must be a list of steps or an object with a 'pipeline' list")
+
+    if not isinstance(steps, list) or not steps:
+        raise CliError("augment needs a non-empty 'pipeline' list of augmentation steps")
+    try:
+        AugmentationPipeline.from_config(steps)
+    except (ValueError, TypeError, KeyError) as e:
+        raise CliError(f"invalid config {path}: {e}") from e
+    return steps
+
+
 def _miniworld_cfg(config: dict) -> MiniWorldConfig:
     block = config.get("miniworld")
     return MiniWorldConfig.from_dict(block) if block else MiniWorldConfig(enabled=False)
+
+
+def _augment(args: argparse.Namespace) -> int:
+    if args.seed is not None and args.seed < 0:
+        raise CliError("--seed must be non-negative")
+    if args.limit is not None and args.limit < 0:
+        raise CliError("--limit must be non-negative")
+    if args.max_frames is not None and args.max_frames < 1:
+        raise CliError("--max-frames must be at least 1")
+    if args.variants < 1:
+        raise CliError("--variants must be at least 1")
+
+    pipeline_config = _load_pipeline_config(args.config)
+
+    out = Path(args.output)
+    if (out / "meta" / "info.json").exists() and not args.overwrite:
+        raise CliError(f"{out} already contains a dataset; pass --overwrite to replace it")
+
+    if args.demo:
+        real = _demo_episodes()
+        print(f"loaded {len(real)} demo episodes (toy pick_place scene)")
+    else:
+        if not args.input:
+            raise CliError("--input <lerobot-dataset> is required (or use --demo)")
+        try:
+            real = read_lerobot_dataset(
+                args.input, video_key=args.video_key, limit=args.limit,
+                max_frames=args.max_frames,
+            )
+        except (OSError, ValueError) as e:
+            raise CliError(f"cannot read {args.input}: {e}") from e
+        print(f"loaded {len(real)} episodes from {args.input}")
+    if not real:
+        raise CliError("no episodes loaded; nothing to do")
+
+    # Augment keeps native resolution — this is real footage, just seasoned — so
+    # there is no downscale step here (that is a GENERATE-only concern).
+    try:
+        result = augment_episodes(
+            real, pipeline_config, variants=args.variants, seed=args.seed,
+            include_original=args.include_original,
+        )
+    except (ValueError, TypeError, KeyError) as e:
+        raise CliError(f"augmentation failed: {e}") from e
+
+    # Keep the source camera's key so the output is a drop-in seasoned copy.
+    write_key = args.write_video_key or real[0].metadata.get("video_key") or "observation.images.augmented"
+    try:
+        write_lerobot_dataset(result.episodes, out, video_key=write_key)
+    except (OSError, ValueError) as e:
+        raise CliError(f"cannot write {out}: {e}") from e
+
+    steps = ", ".join(s.get("name", "?") for s in pipeline_config)
+    origins = " + originals" if args.include_original else ""
+    print(f"augmented {len(real)} source episode(s) x {args.variants} variant(s){origins}; "
+          f"steps: {steps}")
+    print(f"wrote {len(result.episodes)} episodes -> {out}")
+    return 0
 
 
 def _generate(args: argparse.Namespace) -> int:
@@ -267,8 +363,14 @@ def _inspect(args: argparse.Namespace) -> int:
         except (OSError, json.JSONDecodeError) as e:
             raise CliError(f"cannot read {prov_path}: {e}") from e
         synth = sum(1 for p in prov if p.get("synthetic"))
-        print(f"lmfao:     provenance sidecar present — "
-              f"{synth} synthetic / {len(prov) - synth} real episode(s)")
+        aug = sum(1 for p in prov if p.get("augmented") and not p.get("synthetic"))
+        real = len(prov) - synth - aug
+        parts = [f"{real} real"]
+        if aug:
+            parts.append(f"{aug} augmented")
+        if synth:
+            parts.append(f"{synth} synthetic")
+        print(f"lmfao:     provenance sidecar present — {' / '.join(parts)} episode(s)")
 
     if args.episodes:
         for r in records:
@@ -287,6 +389,25 @@ def build_parser() -> argparse.ArgumentParser:
     ins.add_argument("dataset", help="path to a LeRobot dataset root")
     ins.add_argument("--episodes", action="store_true", help="also list every episode")
     ins.set_defaults(func=_inspect)
+
+    aug = sub.add_parser("augment", help="augment a dataset with the ADJUST pipeline (native res, no synthesis)")
+    aug.add_argument("--input", help="path to a LeRobot dataset root")
+    aug.add_argument("--output", required=True, help="output dataset directory")
+    aug.add_argument("--config", help="pipeline JSON: a list of steps, or {\"pipeline\": [...]}")
+    aug.add_argument("--demo", action="store_true", help="use the built-in toy scene instead of --input")
+    aug.add_argument("--variants", type=int, default=1,
+                     help="number of independently-seasoned copies per source episode (default 1)")
+    aug.add_argument("--include-original", action="store_true",
+                     help="also emit the un-augmented source episodes (originals + variants)")
+    aug.add_argument("--seed", type=int, default=None, help="base seed")
+    aug.add_argument("--video-key", default=None, help="which camera stream to read")
+    aug.add_argument("--write-video-key", default=None,
+                     help="video key to write (default: keep the source camera's key)")
+    aug.add_argument("--limit", type=int, default=None, help="load at most N episodes")
+    aug.add_argument("--max-frames", type=int, default=None, help="truncate each episode to N frames")
+    aug.add_argument("--overwrite", action="store_true",
+                     help="replace an existing dataset at --output instead of erroring")
+    aug.set_defaults(func=_augment)
 
     gen = sub.add_parser("generate", help="generate a training set (miniworld + pipeline)")
     gen.add_argument("--input", help="path to a LeRobot dataset root")
