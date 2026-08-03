@@ -98,7 +98,7 @@ def test_inspect_summarizes_dataset(tmp_path, capsys):
     assert main(["inspect", str(out), "--episodes"]) == 0
     text = capsys.readouterr().out
     assert "episodes:  5 on disk" in text
-    assert "2 synthetic / 3 real" in text
+    assert "3 real / 2 synthetic" in text
     assert "episode 4:" in text
 
 

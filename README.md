@@ -42,12 +42,27 @@ the CLI can read and write real LeRobot v3 datasets (video shards + parquet).
 
 ## Quickstart: the `lmfao` CLI
 
+New here? Just run the wizard and paste your dataset link:
+
+```bash
+lmfao
+```
+
+It asks where your data is (a Hugging Face link like
+`https://huggingface.co/datasets/owner/name`, a local folder, or the built-in
+demo), what you want to do, and which augmentations to apply, then runs it. No
+flags to remember. The flag-driven commands below are the same thing for scripts.
+
 The CLI is native to the LeRobot v3 on-disk format. Point it at any dataset
 recorded with LeRobot (or downloaded from the Hugging Face hub):
 
 ```bash
 # What is in this dataset? (episodes, camera streams, tasks, missing shards)
 lmfao inspect ~/data/my_teleop_dataset --episodes
+
+# Augment real footage at native resolution (recommended, trainable output):
+# 3 independently-seasoned copies of every episode
+lmfao augment --input ~/data/my_dataset --output out/aug --config pipeline.json --variants 3
 
 # Try the whole GENERATE + ADJUST flow with zero setup (built-in toy scene)
 lmfao generate --demo --output out/demo --config config.json

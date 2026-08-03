@@ -1,6 +1,8 @@
 """``lmfao`` command-line interface.
 
-Three subcommands, all native to the LeRobot v3 on-disk format:
+Run ``lmfao`` with no arguments for an interactive wizard (paste a Hugging Face
+link, pick what to do). The flag-driven subcommands below are the scriptable
+interface, all native to the LeRobot v3 on-disk format:
 
     lmfao inspect  <lerobot-dataset>
     lmfao augment  --input <lerobot-dataset> --output <dir> --config pipeline.json
@@ -381,9 +383,18 @@ def _inspect(args: argparse.Namespace) -> int:
     return 0
 
 
+def _wizard(args: argparse.Namespace) -> int:
+    from lmfao.wizard import run_wizard
+    return run_wizard()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="lmfao", description="LMFAO data tools")
-    sub = parser.add_subparsers(dest="command", required=True)
+    # No subcommand -> the interactive wizard (see main()).
+    sub = parser.add_subparsers(dest="command", required=False)
+
+    wiz = sub.add_parser("wizard", help="interactive guided mode (default when run with no command)")
+    wiz.set_defaults(func=_wizard)
 
     ins = sub.add_parser("inspect", help="summarize a LeRobot dataset (no video decode)")
     ins.add_argument("dataset", help="path to a LeRobot dataset root")
@@ -433,6 +444,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if getattr(args, "func", None) is None:
+        # Bare `lmfao` with no subcommand: launch the interactive wizard.
+        from lmfao.wizard import run_wizard
+        return run_wizard()
     try:
         return args.func(args)
     except CliError as e:
