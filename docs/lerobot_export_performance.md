@@ -1,146 +1,72 @@
-# Speeding up `lmfao-augment` (LeRobot dataset export)
+# `lmfao-augment` performance
 
-Notes for the next full-scale run. Everything here is deferred optimization: the
-first production run was left on the simple, correct path so it would finish
-reliably. None of these change augmentation output semantics unless called out.
+Measured on the real `Dillonjohnson/pick_place_v2` (45 episodes x 14 variants =
+630 outputs, wrist camera, 1280x720 @ 30fps, 472-1026 frames/episode) on a 24 GB
+M-series Mac.
 
-## Baseline (what we measured)
+## What was built (committed)
 
-Full run of `Dillonjohnson/pick_place_v2`: 45 source episodes x 14 variants =
-630 output episodes, wrist camera only (1280x720, 30fps, 472-1026 frames per
-episode), on a 24 GB M-series Mac.
+| Change | Effect |
+|--------|--------|
+| **decode source once**, reuse across all 14 variants (was 14x re-decode) | removes ~13 redundant decodes/source |
+| **`veryfast` encoder preset** (default), configurable via `--encode-preset` | ~2.4x faster encode than libx264's `medium` default, *and smaller files* |
+| **in-place lighting math** (`brightness`/`contrast`) | peak RSS ~25 GB -> ~11.5 GB; stopped the OOM on 1026-frame clips |
+| **`--resume`** (checkpoint after each source episode, atomic write) | a SIGKILL/OOM no longer forces a from-scratch rerun |
+| `--encoder` / `--encode-bitrate` | opt into a hardware encoder (e.g. `h264_videotoolbox`) |
 
-- **~15-17 s per output episode**, ~2.7 h total, ~8 GB output.
-- Peak RSS ~11.5 GB per clip after the in-place lighting fix (`brightness`/
-  `contrast` used to build 2-3 full-clip float32 copies and OOM-killed the run
-  on the 1026-frame episode; see `features/lighting/*.py`).
+**Result: ~195 s/source -> ~96 s/source. Full 45x14 run ~2.9 h -> ~72 min, same
+output size, and now crash-recoverable.** Output verified bit-for-bit identical
+(trajectory, frame counts, schema).
 
-### Where the time actually goes
+## Where the time actually goes (measured, warm, per 777-frame clip)
 
-Per output clip (~800 frames of 720p), roughly:
+An earlier guess blamed the encoder; the benchmark disproved it. The real cost is
+the **augmentation**, and within it, **noise**:
 
-| Stage                         | Share | Why |
-|-------------------------------|-------|-----|
-| H.264 **re-encode** (libx264) | ~70%  | Real video compression, `preset=medium` (default), CPU. Done 630x. |
-| H.264 **decode** of source    | ~25%  | And done redundantly — once *per variant*, so 14x per source episode. |
-| Augmentation (numpy math)     | ~5%   | Brightness/contrast/noise on the array — cheap. |
+| Augmenter | Time | Note |
+|-----------|------|------|
+| `noise.gaussian` / `noise.uniform` | **~12.5 s each** | generates 715M random floats on CPU (numpy) |
+| `lighting.brightness/contrast/color_temperature` | ~3.5 s each | whole-clip float32 |
+| `spatial.random_crop` | ~0.5 s | uint8 |
+| `occlusion.*` | ~0.2 s | uint8 |
+| decode (once) | ~4.5 s | |
+| encode (veryfast) | ~2.5 s | per variant |
 
-The "filters" are not the cost. The codec is. Two structural issues drive it:
-the encoder preset, and decoding each source clip 14 times.
+So per source episode now: ~48 s augment (half of it the 2 noise variants) +
+~35 s encode (14x) + ~4.5 s decode. **Augment is the floor for a serial run.**
 
-## Optimizations, ranked by payoff
+## Remaining levers (not built — each has a real tradeoff)
 
-### 1. Faster libx264 preset (biggest single lever)
+### A. GPU noise — DO NOT use torch/MPS here
+Noise (~25 s/source) is the biggest single cost and the accelerator path
+(`features/noise/accelerator.py`) already supports MPS via torch. **But
+installing torch deadlocks `import av` (PyAV) on this environment** — an
+OpenMP/dylib conflict that hangs the whole video pipeline. Verified: with torch
+present `import av` never returns; uninstalling torch restores it. If GPU noise
+is ever wanted, it must run in a **separate process/venv** that never imports
+PyAV, or use a CUDA box where the conflict does not occur. Not worth it on this
+Mac.
 
-`encode_mp4` (`datasets/_video.py:66`) sets only CRF:
+### B. Overlap encode with augment (safe, ~1.6x more -> ~45 min)
+Augment is serial (numpy, 11 GB float, one clip at a time) and encode is serial
+after it. Handing each variant's encode to a small thread pool (libx264 releases
+the GIL; encode holds only the ~2.8 GB uint8 result, not the 11 GB float) lets
+the next variant's augment overlap the previous encode. Wall ~= max(augment,
+encode) ~= ~50 s/source. Memory-safe with 2-3 encode threads (~11 + 2x2.8 =
+~17 GB < 24 GB). Requires decoupling encode from `add_episode`'s synchronous path.
 
-```python
-stream.options = {"crf": str(crf)}       # -> libx264 preset defaults to "medium"
-```
+### C. Process-parallel episodes (fast, but reintroduces OOM risk on 24 GB)
+Source episodes are independent; N worker processes each writing a shard, then a
+merge pass (concatenate data/videos with renumbered indices, re-aggregate
+`meta/stats.json`, episodes, tasks). Near-Nx. **The catch:** each worker peaks
+~11-14 GB during a float augment, so 2 concurrent big episodes (~28 GB) exceed
+24 GB and OOM — exactly the failure we just removed. Only safe with a
+memory-aware worker cap (effectively 1 on the big episodes here) or on a
+bigger-RAM / CUDA box, where it would reach ~15-25 min. `--resume` makes an
+occasional OOM recoverable, but this trades the "no failure" guarantee for speed.
 
-Add a preset:
-
-```python
-stream.options = {"crf": str(crf), "preset": preset}   # e.g. "veryfast"
-```
-
-- `veryfast`: ~3-4x faster encode than `medium`, ~15-25% larger files at the
-  same CRF, visually near-identical. Good default for training data.
-- `ultrafast`: ~6-8x faster, ~2-3x larger files. Use if disk is not the concern.
-- Tradeoff is **file size / compression efficiency, not correctness** — the
-  decoded frames a training loop sees are the same augmented pixels within CRF
-  tolerance. Expose `preset` as a CLI flag (`--encode-preset`, default
-  `veryfast`) so it is auditable.
-
-Expected: since encode is ~70% of the time, `veryfast` alone takes the run from
-~2.7 h to roughly **~50-70 min**.
-
-### 2. Decode each source clip once, reuse across its 14 variants
-
-`cli.run` decodes inside the variant loop (`cli.py:112`):
-
-```python
-for var_i, variant in enumerate(variants):
-    def _augment(cam, cam_i, ...):
-        frames = reader.read_video(ep_i, cam)   # <-- re-decodes the SAME clip every variant
-```
-
-Decode once per (episode, camera), then run all variants against the in-memory
-uint8 clip:
-
-```python
-for cam in cams:
-    src = reader.read_video(ep_i, cam)          # decode ONCE (~2.8 GB uint8 for 1026 frames)
-    for var_i, variant in enumerate(variants):
-        out = AugmentationPipeline.from_config(variant["pipeline"], seed=...)(src)[0]
-        # encode out ...
-```
-
-- Eliminates 13 of every 14 decodes -> removes ~20-25% of total wall time.
-- **Memory:** holds one uint8 source (~2.8 GB) plus one augmented float buffer
-  (~11 GB peak) = ~14 GB. Fits in 24 GB. The current per-variant decode exists
-  only to keep the lazy per-camera provider's peak minimal; with the in-place
-  lighting fix the reuse form is well within budget.
-- Output identical (same seeds, same source pixels).
-
-**#1 + #2 together: ~2.7 h -> roughly ~30-45 min, no quality change worth
-worrying about.**
-
-### 3. Hardware encoder (aggressive, macOS)
-
-Swap libx264 for Apple VideoToolbox:
-
-```python
-container.add_stream("h264_videotoolbox", rate=...)   # ASIC/GPU encode
-```
-
-- Near real-time or faster encode, low CPU. Can be 5-10x on the encode stage.
-- Caveats: quality is bitrate-controlled, not CRF — set a target bitrate and
-  spot-check quality. macOS only; keep libx264 as the portable fallback. Make it
-  opt-in (`--encoder videotoolbox`).
-
-### 4. Parallel episodes (bounded by RAM here)
-
-The run is single-process. Episodes are independent, so N worker processes give
-~Nx — but each worker peaks ~11-14 GB, so on 24 GB only ~1 extra worker is safe
-alongside the OS and apps. Parallelism pays off on a bigger-RAM box or once
-per-clip peak is lower (e.g. after chunked encoding). libx264 already uses
-frame-level threads within a single encode, so CPU cores are not idle.
-
-Worktree isolation is not needed (each worker writes distinct files), but the
-`LeRobotWriter` accumulates global stats and must be sharded-then-merged if you
-parallelize across the writer: have each worker emit a partial dataset, then a
-final merge pass concatenates data/videos and re-aggregates `meta/stats.json`
-and the episodes parquet.
-
-### 5. Lower per-clip peak -> unlocks more parallelism (structural)
-
-Augmenters operate on the whole clip in float32 (~11 GB for 1026 frames). A
-streaming/chunked apply (process temporal blocks, thread the RNG) would bound
-memory to a chunk regardless of episode length and let more workers run in
-parallel. Caveat: clip-global augmenters (`occlusion.moving_box` trajectory,
-`occlusion.sequence_box` constant box, `border_intrusion` constant mode) must
-compute their per-clip parameters up front and then apply per chunk, or their
-temporal coherence breaks. This is the real refactor; do it only if you need to
-scale to many-camera / very-long-episode datasets.
-
-## Recommended next-run config
-
-Start with the two cheap, safe wins:
-
-1. `preset=veryfast` in `encode_mp4` (add `--encode-preset`, default it).
-2. Decode-once-per-source in `cli.run`.
-
-That should land a full 45x14 run in **~30-45 min** with output essentially
-indistinguishable from today's. Reach for VideoToolbox (#3) or parallelism
-(#4/#5) only if you push to much larger datasets or multi-camera exports.
-
-## Also worth adding (reliability, not speed)
-
-- **Resume / checkpointing.** The CLI writes `meta/` only in `close()`, from
-  in-memory accumulators. An OOM `SIGKILL` (which bypasses the `finally`) leaves
-  completed episodes on disk but unfinalized and unloadable, forcing a full
-  rerun. Either checkpoint the writer state every N episodes, or add `--resume`
-  that rebuilds the accumulators (stats, episode rows, task map) from the
-  partial output on disk and continues. This is what turned the v1 OOM into a
-  from-scratch rerun.
+## Recommendation
+Serial fast path (shipped): **~72 min, memory-safe, resumable** — honors both
+"much faster" and "no failure". If ~45 min is wanted without touching memory
+safety, build **B**. Reserve **C** for a machine with more RAM (or a GPU), where
+it is both fast and safe.
