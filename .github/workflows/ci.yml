@@ -24,7 +24,10 @@ jobs:
         uses: astral-sh/setup-uv@v5
 
       - name: Install package
-        run: uv pip install --system -e ".[dev]"
+        run: uv pip install --system -e ".[dev,datasets]"
+
+      - name: Ensure LeRobot dataset tests cannot silently skip
+        run: python -c "import pyarrow, av"
 
       - name: Check for conflict markers
         run: |

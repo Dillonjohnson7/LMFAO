@@ -66,6 +66,7 @@ class LeRobotWriter:
         self._global_index = 0
         self._samples: dict[str, list[np.ndarray]] = {}
         self._video_shape: dict[str, tuple[int, int, int]] = {}
+        self._written_features: set[str] = set()
 
     def _accumulate(self, feature: str, reduced: np.ndarray) -> None:
         self._samples.setdefault(feature, []).append(reduced)
@@ -79,29 +80,53 @@ class LeRobotWriter:
         timestamps: np.ndarray | None = None,
         task: str = "",
     ) -> int:
+        """Write one episode.
+
+        ``frames`` maps camera key -> ``(F, H, W, 3)`` uint8 array, or a
+        zero-arg callable returning one. Callables are materialized one camera
+        at a time and released after encoding, so peak memory stays bounded by
+        a single camera's frames regardless of camera count.
+        """
         pa, pq = _lazy_pa()
         ep = len(self._rows)
 
-        length = (
-            len(timestamps)
-            if timestamps is not None
-            else int(next(iter(frames.values())).shape[0])
-        )
-        if timestamps is None:
-            timestamps = (np.arange(length, dtype=np.float64) / self.fps).astype(np.float32)
+        length = len(timestamps) if timestamps is not None else None
         task_index = self._tasks.setdefault(task, len(self._tasks))
 
         ep_stats: dict[str, dict] = {}
 
-        # ---- videos ----
+        # ---- videos (one camera at a time) ----
         for cam in self.camera_keys:
-            arr = np.asarray(frames[cam])
+            src = frames[cam]
+            arr = np.asarray(src() if callable(src) else src)
+            if arr.ndim != 4 or arr.shape[0] == 0:
+                raise ValueError(
+                    f"camera '{cam}' episode {ep}: expected non-empty (F, H, W, C) frames, got shape {arr.shape}"
+                )
+            if length is None:
+                length = int(arr.shape[0])
+            elif int(arr.shape[0]) != length:
+                raise ValueError(
+                    f"camera '{cam}' episode {ep}: {arr.shape[0]} frames but episode length is {length}"
+                )
             self._video_shape[cam] = tuple(int(x) for x in arr.shape[1:])
             vpath = self.root / _VIDEO_PATH.format(video_key=cam, chunk_index=0, file_index=ep)
             encode_mp4(vpath, arr, self.fps, codec="libx264")
             reduced = reduce_samples(arr, is_image=True, seed=ep)
             ep_stats[cam] = stats_from_samples(reduced, count=int(arr.shape[0]), image_channels=int(arr.shape[-1]))
             self._accumulate(cam, reduced)
+            self._written_features.add(cam)
+            del arr
+
+        if length is None:
+            raise ValueError(f"episode {ep} has no timestamps and no camera frames to infer a length from")
+        if timestamps is None:
+            timestamps = (np.arange(length, dtype=np.float64) / self.fps).astype(np.float32)
+        for name, values in (("state", state), ("actions", actions)):
+            if values is not None and len(values) != length:
+                raise ValueError(
+                    f"episode {ep}: {name} has {len(values)} rows but episode length is {length}"
+                )
 
         # ---- per-frame data ----
         per_frame: dict[str, np.ndarray] = {
@@ -125,12 +150,15 @@ class LeRobotWriter:
             reduced = reduce_samples(values, is_image=False)
             ep_stats[col] = stats_from_samples(reduced, count=length)
             self._accumulate(col, reduced)
+            self._written_features.add(col)
 
         # ---- episode metadata row ----
         row: dict = {
             "episode_index": ep,
             "tasks": [task],
             "length": length,
+            "meta/episodes/chunk_index": 0,
+            "meta/episodes/file_index": 0,
             "data/chunk_index": 0,
             "data/file_index": ep,
             "dataset_from_index": self._global_index,
@@ -178,6 +206,40 @@ class LeRobotWriter:
                 "task": pa.array([t for t, _ in tasks_sorted], type=pa.string()),
             }
         )
+        # LeRobot loads tasks with pandas and expects the task strings as the
+        # DataFrame index; without this metadata it gets a RangeIndex and task
+        # lookups silently fail.
+        pandas_meta = {
+            "index_columns": ["task"],
+            "column_indexes": [
+                {
+                    "name": None,
+                    "field_name": None,
+                    "pandas_type": "unicode",
+                    "numpy_type": "object",
+                    "metadata": {"encoding": "UTF-8"},
+                }
+            ],
+            "columns": [
+                {
+                    "name": "task_index",
+                    "field_name": "task_index",
+                    "pandas_type": "int64",
+                    "numpy_type": "int64",
+                    "metadata": None,
+                },
+                {
+                    "name": "task",
+                    "field_name": "task",
+                    "pandas_type": "unicode",
+                    "numpy_type": "object",
+                    "metadata": None,
+                },
+            ],
+            "creator": {"library": "pyarrow", "version": pa.__version__},
+            "pandas_version": "2.0.0",
+        }
+        tasks_table = tasks_table.replace_schema_metadata({b"pandas": json.dumps(pandas_meta).encode()})
         pq.write_table(tasks_table, self.root / "meta" / "tasks.parquet")
 
         ep_dir = self.root / "meta" / "episodes" / "chunk-000"
@@ -195,7 +257,13 @@ class LeRobotWriter:
 
     def _build_info(self, total_episodes: int, total_frames: int) -> dict:
         features = copy.deepcopy(self.features)
+        if self._written_features:
+            # Only declare features that were actually written; declaring e.g.
+            # observation.state when the data parquet lacks it breaks loaders.
+            features = {k: v for k, v in features.items() if k in self._written_features}
         for cam in self.camera_keys:
+            if cam not in features:
+                continue
             h, w, c = self._video_shape.get(cam, tuple(features[cam].get("shape", (0, 0, 3))))
             features[cam]["shape"] = [h, w, c]
             features[cam]["info"] = {

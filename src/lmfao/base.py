@@ -51,6 +51,16 @@ def preserve_dtype(original: Video, augmented: Video) -> Video:
 
     if np.issubdtype(original.dtype, np.integer):
         info = np.iinfo(original.dtype)
+        if (
+            isinstance(augmented, np.ndarray)
+            and augmented is not original
+            and augmented.base is None
+            and augmented.dtype.kind == "f"
+        ):
+            # The augmenter owns this float buffer; clip in place instead of
+            # materializing another whole-video copy.
+            np.clip(augmented, info.min, info.max, out=augmented)
+            return augmented.astype(original.dtype)
         return np.clip(augmented, info.min, info.max).astype(original.dtype)
 
     return augmented.astype(original.dtype, copy=False)

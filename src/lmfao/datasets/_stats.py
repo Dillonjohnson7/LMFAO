@@ -24,13 +24,16 @@ def reduce_samples(values: np.ndarray, *, is_image: bool, max_image_pixels: int 
     """Reduce a feature's per-frame values to a 2D ``(M, D)`` sample matrix."""
     a = np.asarray(values)
     if is_image:
-        # (F, H, W, C) uint8 -> (M, C) float in [0, 1]
+        # (F, H, W, C) uint8 -> (M, C) float in [0, 1]. Subsample while still
+        # uint8: converting the whole episode first materializes an 8x float64
+        # copy (tens of GB for a real episode).
         channels = a.shape[-1]
-        flat = a.reshape(-1, channels).astype(np.float64) / 255.0
+        flat = a.reshape(-1, channels)
         if flat.shape[0] > max_image_pixels:
-            idx = np.random.default_rng(seed).choice(flat.shape[0], max_image_pixels, replace=False)
+            idx = np.random.default_rng(seed).integers(0, flat.shape[0], max_image_pixels)
+            idx.sort()
             flat = flat[idx]
-        return flat
+        return flat.astype(np.float64) / 255.0
     a = a.astype(np.float64)
     if a.ndim == 1:
         a = a[:, None]
@@ -44,12 +47,14 @@ def stats_from_samples(reduced: np.ndarray, *, count: int, image_channels: int |
         "max": reduced.max(axis=0),
         "mean": reduced.mean(axis=0),
         "std": reduced.std(axis=0),
-        "count": np.full(reduced.shape[1], count, dtype=np.int64),
     }
     for p, name in QUANTILES:
         out[name] = np.quantile(reduced, p, axis=0)
     if image_channels is not None:
         out = {k: v.reshape(image_channels, 1, 1) for k, v in out.items()}
+    # LeRobot stores count as a single-element list for every feature,
+    # including images (never broadcast to the feature shape).
+    out["count"] = np.asarray([count], dtype=np.int64)
     return out
 
 

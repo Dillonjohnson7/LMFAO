@@ -43,12 +43,19 @@ def encode_mp4(
     frames = np.asarray(frames)
     if frames.ndim != 4 or frames.shape[-1] != 3:
         raise ValueError(f"frames must be (F, H, W, 3) RGB, got shape {frames.shape}")
+    if frames.shape[0] == 0:
+        raise ValueError("cannot encode a video with 0 frames")
     if frames.dtype != np.uint8:
         frames = np.clip(frames, 0, 255).astype(np.uint8)
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     _f, height, width, _c = frames.shape
+    if height % 2 or width % 2:
+        raise ValueError(
+            f"H.264/yuv420p needs even frame dimensions, got {width}x{height}; "
+            "crop or pad to even width/height before writing"
+        )
 
     container = av.open(str(path), mode="w")
     try:

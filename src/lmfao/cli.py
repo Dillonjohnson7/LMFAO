@@ -54,14 +54,33 @@ def run(
     from lmfao.datasets.lerobot_writer import LeRobotWriter
 
     reader = LeRobotReader(input_dir)
-    cams = cameras or job.get("cameras") or reader.camera_keys
-    missing = [c for c in cams if c not in reader.camera_keys]
-    if missing:
-        raise SystemExit(f"cameras not in dataset {reader.camera_keys}: {missing}")
+    if cameras or job.get("cameras"):
+        cams = cameras or job["cameras"]
+        missing = [c for c in cams if c not in reader.camera_keys]
+        if missing:
+            raise SystemExit(f"cameras not in dataset {reader.camera_keys}: {missing}")
+    else:
+        # Default to cameras that actually have video on disk; datasets in the
+        # wild sometimes declare cameras whose videos were never uploaded.
+        cams = reader.available_camera_keys()
+        skipped_cams = [c for c in reader.camera_keys if c not in cams]
+        if skipped_cams:
+            print(f"skipping declared cameras with no video files: {skipped_cams}", file=sys.stderr)
+    if not cams:
+        raise SystemExit("no cameras with video files to augment")
 
     variants = job.get("variants") or []
     if not variants:
         raise SystemExit("job config has no variants")
+    # Validate every variant's pipeline before touching any data, so a typo in
+    # variant N doesn't surface after minutes of work on earlier variants.
+    for var_i, variant in enumerate(variants):
+        try:
+            AugmentationPipeline.from_config(variant.get("pipeline") or [], seed=0)
+        except Exception as exc:
+            raise SystemExit(f"variant {var_i} ({variant.get('id', '?')}): invalid pipeline: {exc}") from exc
+        if not variant.get("pipeline"):
+            raise SystemExit(f"variant {var_i} ({variant.get('id', '?')}): empty pipeline")
 
     features = {k: v for k, v in reader.features.items() if v.get("dtype") != "video" or k in cams}
     writer = LeRobotWriter(
@@ -73,27 +92,41 @@ def run(
 
     n_source = len(reader) if limit is None else min(limit, len(reader))
     written = 0
-    for ep_i in range(n_source):
-        ep = reader.read_episode(ep_i, cameras=cams)
-        for var_i, variant in enumerate(variants):
-            aug_frames = {}
-            for cam_i, cam in enumerate(cams):
-                pipe = AugmentationPipeline.from_config(
-                    variant["pipeline"], seed=_seed_for(seed, ep_i, var_i, cam_i)
-                )
-                out, _ = pipe(ep.frames[cam])
-                aug_frames[cam] = out
-            writer.add_episode(
-                aug_frames,
-                state=ep.state,
-                actions=ep.actions,
-                timestamps=ep.timestamps,
-                task=ep.task,
-            )
-            written += 1
-        print(f"  episode {ep_i + 1}/{n_source} -> {len(variants)} variant(s)", file=sys.stderr)
+    try:
+        for ep_i in range(n_source):
+            ep = reader.read_episode(ep_i, cameras=[])  # trajectory only; video streams below
+            for var_i, variant in enumerate(variants):
+                # Lazy per-camera providers: the writer materializes, encodes,
+                # and frees one camera at a time, so peak memory is one
+                # camera's frames plus the pipeline's working set.
+                def _augment(cam: str, cam_i: int, var_i: int = var_i, ep_i: int = ep_i, variant: dict = variant):
+                    frames = reader.read_video(ep_i, cam)
+                    pipe = AugmentationPipeline.from_config(
+                        variant["pipeline"], seed=_seed_for(seed, ep_i, var_i, cam_i)
+                    )
+                    out, _ = pipe(frames)
+                    return out
 
-    writer.close()
+                aug_frames = {
+                    cam: (lambda cam=cam, cam_i=cam_i: _augment(cam, cam_i))
+                    for cam_i, cam in enumerate(cams)
+                }
+                writer.add_episode(
+                    aug_frames,
+                    state=ep.state,
+                    actions=ep.actions,
+                    timestamps=ep.timestamps,
+                    task=ep.task,
+                )
+                written += 1
+            print(f"  episode {ep_i + 1}/{n_source} -> {len(variants)} variant(s)", file=sys.stderr)
+    finally:
+        # Always finalize meta/ so episodes completed before a crash or Ctrl+C
+        # remain a loadable dataset instead of orphaned mp4/parquet files.
+        writer.close()
+        if written < n_source * len(variants):
+            print(f"run interrupted: finalized {written} completed episode(s) in {output_dir}", file=sys.stderr)
+
     return {"source_episodes": n_source, "variants": len(variants), "written_episodes": written}
 
 
