@@ -18,22 +18,27 @@ M-series Mac.
 output size, and now crash-recoverable.** Output verified bit-for-bit identical
 (trajectory, frame counts, schema).
 
-## Where the time actually goes (measured, warm, per 777-frame clip)
+## Where the time actually goes (measured, warm, quiet machine, 777-frame clip)
 
-An earlier guess blamed the encoder; the benchmark disproved it. The real cost is
-the **augmentation**, and within it, **noise**:
+Definitive per-category budget for one source episode (14 variants), with all
+optimizations (LUT lighting, decode-once, veryfast):
 
-| Augmenter | Time | Note |
-|-----------|------|------|
-| `noise.gaussian` / `noise.uniform` | **~12.5 s each** | generates 715M random floats on CPU (numpy) |
-| `lighting.brightness/contrast/color_temperature` | ~3.5 s each | whole-clip float32 |
-| `spatial.random_crop` | ~0.5 s | uint8 |
-| `occlusion.*` | ~0.2 s | uint8 |
-| decode (once) | ~4.5 s | |
-| encode (veryfast) | ~2.5 s | per variant |
+| Category | # var | augment | encode | total |
+|----------|-------|---------|--------|-------|
+| lighting (brightness/contrast/color-temp) | 6 | 11.8 s | 14.5 s | 26.3 s |
+| noise (gaussian/uniform) | 2 | **18.2 s** | 4.8 s | 23.0 s |
+| occlusion (seq/border/moving box) | 4 | 0.8 s | 9.7 s | 10.5 s |
+| spatial (random crop) | 2 | 0.9 s | 4.8 s | 5.8 s |
+| decode (once) | — | — | — | 1.0 s |
+| **TOTAL** | 14 | **31.7 s** | **33.9 s** | **66.6 s** |
 
-So per source episode now: ~48 s augment (half of it the 2 noise variants) +
-~35 s encode (14x) + ~4.5 s decode. **Augment is the floor for a serial run.**
+Full 45-source run: **~50 min**. The split is ~48% augment / 51% encode / 1%
+decode — no single dominant cause. Within augment, **noise (18.2 s) is now the
+biggest** (RNG-bound; lighting dropped to 11.8 s after the LUT rewrite). Encode
+(2.4 s/variant x 14) is the biggest single line and is codec-bound.
+
+Progression: original ~2.9 h -> 72 min (decode-once + veryfast) -> ~50 min (LUT
+lighting).
 
 ## Remaining levers (not built — each has a real tradeoff)
 
