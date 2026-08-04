@@ -9,3 +9,12 @@ data/
 test_videos/
 augmented_videos/
 
+
+# never commit key material / secrets
+*.pub
+*.pem
+*_key
+id_ed25519*
+id_rsa*
+pod_key*
+.runpod_key
