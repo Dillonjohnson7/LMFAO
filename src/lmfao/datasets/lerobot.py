@@ -318,6 +318,12 @@ def read_lerobot_dataset(
 # ---------------------------------------------------------------- writing
 
 
+def _vec_type(pa, dim: int):
+    """A per-frame vector column type. LeRobot expects fixed-length vectors, so use
+    fixed_size_list<float32>[dim]; a zero dim (no state/actions) uses a plain list."""
+    return pa.list_(pa.float32(), dim) if dim > 0 else pa.list_(pa.float32())
+
+
 def _build_info(*, video_key: str, h: int, w: int, state_dim: int, action_dim: int,
                 fps: float, codec_note: str, total_episodes: int, total_frames: int,
                 total_tasks: int) -> dict:
@@ -617,10 +623,12 @@ def write_lerobot_dataset(
     (root / "meta" / "info.json").write_text(json.dumps(info, indent=1))
 
     # --- data parquet ---
+    # LeRobot declares state/action as fixed-length vectors, so store them as
+    # fixed_size_list<float>[dim] (a variable list<> fails LeRobot's schema check).
     data_table = pa.table(
         {
-            "observation.state": pa.array(states, type=pa.list_(pa.float32())),
-            "action": pa.array(actions, type=pa.list_(pa.float32())),
+            "observation.state": pa.array(states, type=_vec_type(pa, state_dim)),
+            "action": pa.array(actions, type=_vec_type(pa, action_dim)),
             "timestamp": pa.array(timestamps, type=pa.float32()),
             "frame_index": pa.array(frame_indices, type=pa.int64()),
             "episode_index": pa.array(episode_indices, type=pa.int64()),
@@ -796,8 +804,8 @@ class LeRobotStreamingWriter:
             for f in range(n)
         ]
         table = pa.table({
-            "observation.state": pa.array(states, type=pa.list_(pa.float32())),
-            "action": pa.array(actions, type=pa.list_(pa.float32())),
+            "observation.state": pa.array(states, type=_vec_type(pa, self.state_dim)),
+            "action": pa.array(actions, type=_vec_type(pa, self.action_dim)),
             "timestamp": pa.array([f / self.fps for f in range(n)], type=pa.float32()),
             "frame_index": pa.array(list(range(n)), type=pa.int64()),
             "episode_index": pa.array([ei] * n, type=pa.int64()),
