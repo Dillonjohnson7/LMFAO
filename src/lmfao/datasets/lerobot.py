@@ -318,6 +318,55 @@ def read_lerobot_dataset(
 # ---------------------------------------------------------------- writing
 
 
+def _build_info(*, video_key: str, h: int, w: int, state_dim: int, action_dim: int,
+                fps: float, codec_note: str, total_episodes: int, total_frames: int,
+                total_tasks: int) -> dict:
+    """Build a LeRobot v3.0 info.json.
+
+    Declares every per-frame data column as a feature (state, action, and the
+    bookkeeping index/timestamp columns), matching what LeRobot's data loader
+    expects: it derives the parquet schema from these features, so a data column
+    that is not declared makes ``Dataset.from_parquet`` fail. Also emits
+    ``splits`` and the size fields real datasets carry.
+    """
+    return {
+        "codebase_version": "v3.0",
+        "robot_type": "lmfao_synthetic",
+        "total_episodes": total_episodes,
+        "total_frames": total_frames,
+        "total_tasks": total_tasks,
+        "chunks_size": 1000,
+        "data_files_size_in_mb": 100,
+        "video_files_size_in_mb": 500,
+        "fps": fps,
+        "splits": {"train": f"0:{total_episodes}"},
+        "data_path": "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet",
+        "video_path": "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4",
+        "features": {
+            "observation.state": {"dtype": "float32", "shape": [state_dim], "names": None},
+            "action": {"dtype": "float32", "shape": [action_dim], "names": None},
+            video_key: {
+                "dtype": "video",
+                "shape": [h, w, 3],
+                "names": ["height", "width", "channels"],
+                "info": {
+                    "is_depth_map": False,
+                    "video.height": h, "video.width": w,
+                    "video.codec": codec_note, "video.pix_fmt": "yuv420p",
+                    "video.fps": fps, "video.channels": 3, "has_audio": False,
+                },
+            },
+            # Every remaining data-parquet column must be declared or the loader's
+            # schema won't match the parquet.
+            "timestamp": {"dtype": "float32", "shape": [1], "names": None},
+            "frame_index": {"dtype": "int64", "shape": [1], "names": None},
+            "episode_index": {"dtype": "int64", "shape": [1], "names": None},
+            "index": {"dtype": "int64", "shape": [1], "names": None},
+            "task_index": {"dtype": "int64", "shape": [1], "names": None},
+        },
+    }
+
+
 def _write_tasks_parquet(pq, pa, path: Path, tasks: list[str]) -> None:
     """Write meta/tasks.parquet with the pandas index metadata LeRobot expects.
 
@@ -559,33 +608,11 @@ def write_lerobot_dataset(
                   preset=video_preset)
 
     # --- info.json ---
-    info = {
-        "codebase_version": "v3.0",
-        "robot_type": "lmfao_synthetic",
-        "total_episodes": len(episodes),
-        "total_frames": int(all_frames.shape[0]),
-        "total_tasks": len(tasks),
-        "chunks_size": 1000,
-        "fps": fps,
-        "data_path": "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet",
-        "video_path": "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4",
-        "features": {
-            "observation.state": {"dtype": "float32", "shape": [state_dim]},
-            "action": {"dtype": "float32", "shape": [action_dim]},
-            video_key: {
-                "dtype": "video",
-                "shape": [h, w, 3],
-                "names": ["height", "width", "channels"],
-                "info": {
-                    "video.height": h,
-                    "video.width": w,
-                    "video.codec": codec_note,
-                    "video.fps": fps,
-                    "video.channels": 3,
-                },
-            },
-        },
-    }
+    info = _build_info(
+        video_key=video_key, h=h, w=w, state_dim=state_dim, action_dim=action_dim, fps=fps,
+        codec_note=codec_note, total_episodes=len(episodes),
+        total_frames=int(all_frames.shape[0]), total_tasks=len(tasks),
+    )
     (root / "meta").mkdir(parents=True, exist_ok=True)
     (root / "meta" / "info.json").write_text(json.dumps(info, indent=1))
 
@@ -827,31 +854,12 @@ class LeRobotStreamingWriter:
 
         if not self._rows:
             raise ValueError("no episodes were written")
-        info = {
-            "codebase_version": "v3.0",
-            "robot_type": "lmfao_synthetic",
-            "total_episodes": len(self._rows),
-            "total_frames": int(self._global_index),
-            "total_tasks": len(self._tasks),
-            "chunks_size": 1000,
-            "fps": self.fps,
-            "data_path": "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet",
-            "video_path": "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4",
-            "features": {
-                "observation.state": {"dtype": "float32", "shape": [self.state_dim]},
-                "action": {"dtype": "float32", "shape": [self.action_dim]},
-                self.video_key: {
-                    "dtype": "video",
-                    "shape": [self._h, self._w, 3],
-                    "names": ["height", "width", "channels"],
-                    "info": {
-                        "video.height": self._h, "video.width": self._w,
-                        "video.codec": self.codec_note, "video.fps": self.fps,
-                        "video.channels": 3,
-                    },
-                },
-            },
-        }
+        info = _build_info(
+            video_key=self.video_key, h=self._h, w=self._w, state_dim=self.state_dim,
+            action_dim=self.action_dim, fps=self.fps, codec_note=self.codec_note,
+            total_episodes=len(self._rows), total_frames=int(self._global_index),
+            total_tasks=len(self._tasks),
+        )
         (self.root / "meta").mkdir(parents=True, exist_ok=True)
         (self.root / "meta" / "info.json").write_text(json.dumps(info, indent=1))
 
