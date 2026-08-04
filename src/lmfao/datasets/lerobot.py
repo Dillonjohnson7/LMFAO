@@ -244,6 +244,12 @@ def read_lerobot_dataset(
         actions = _col("action")
 
         # --- frames from the chosen video shard ---
+        if f"videos/{key}/chunk_index" not in rec:
+            raise ValueError(
+                f"video_key {key!r} is declared in info.json but episode {ep_index}'s "
+                f"record has no columns for it; pass a video_key the episodes actually "
+                f"reference (have: {', '.join(k for k in keys if f'videos/{k}/chunk_index' in rec)})"
+            )
         vchunk = int(rec[f"videos/{key}/chunk_index"])
         vfile = int(rec[f"videos/{key}/file_index"])
         from_ts = float(rec[f"videos/{key}/from_timestamp"])
@@ -625,6 +631,19 @@ class LeRobotStreamingWriter:
     def episodes_written(self) -> int:
         return len(self._rows)
 
+    def missing_files(self) -> list[str]:
+        """Per-episode video/data files named in the current state that are not on
+        disk. Used to detect a checkpoint whose output was deleted/moved before a
+        --resume, so we refuse instead of finalizing a corrupt dataset."""
+        missing: list[str] = []
+        for ei in range(len(self._rows)):
+            vpath = self.root / "videos" / self.video_key / "chunk-000" / f"file-{ei:03d}.mp4"
+            dpath = self.root / "data" / "chunk-000" / f"file-{ei:03d}.parquet"
+            for p in (vpath, dpath):
+                if not p.exists():
+                    missing.append(str(p))
+        return missing
+
     def state_dict(self) -> dict:
         return {
             "rows": self._rows, "tasks": self._tasks, "task_index": self._task_index,
@@ -668,6 +687,8 @@ class LeRobotStreamingWriter:
             raise ValueError("episode state presence disagrees with the dataset (would fabricate zeros)")
         if ep.state is not None and ep.state.shape[1] != self.state_dim:
             raise ValueError(f"episode state dim {ep.state.shape[1]} != dataset {self.state_dim}")
+        if (ep.actions is not None) != (self.action_dim > 0):
+            raise ValueError("episode action presence disagrees with the dataset (would fabricate zeros)")
         if ep.actions is not None and ep.actions.shape[1] != self.action_dim:
             raise ValueError(f"episode action dim {ep.actions.shape[1]} != dataset {self.action_dim}")
 

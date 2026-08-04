@@ -252,3 +252,29 @@ def test_streaming_writer_rejects_inconsistent_geometry(tmp_path):
     w.add_episode(Episode(frames=np.zeros((4, 16, 16, 3), np.uint8), fps=30.0))
     with pytest.raises(ValueError, match="geometry"):
         w.add_episode(Episode(frames=np.zeros((4, 32, 32, 3), np.uint8), fps=30.0))
+
+
+def test_streaming_writer_rejects_missing_actions_presence(tmp_path):
+    # writer expects actions (dim 3) but the episode has none -> would fabricate zeros
+    w = LeRobotStreamingWriter(tmp_path, video_key="v", fps=30.0, state_dim=0, action_dim=3)
+    with pytest.raises(ValueError, match="action presence"):
+        w.add_episode(Episode(frames=np.zeros((3, 16, 16, 3), np.uint8), fps=30.0))
+
+
+def test_streaming_writer_missing_files_detects_deleted_output(tmp_path):
+    w = LeRobotStreamingWriter(tmp_path, video_key="v", fps=30.0, state_dim=0, action_dim=0)
+    w.add_episode(Episode(frames=np.zeros((3, 16, 16, 3), np.uint8), fps=30.0))
+    assert w.missing_files() == []
+    next((tmp_path / "data" / "chunk-000").glob("*.parquet")).unlink()
+    assert len(w.missing_files()) == 1
+
+
+def test_read_absent_declared_video_key_is_clear_error(tmp_path):
+    import json as _json
+
+    write_lerobot_dataset([_episode()], tmp_path, video_key="cam_a")
+    info = _json.loads((tmp_path / "meta" / "info.json").read_text())
+    info["features"]["cam_b"] = dict(info["features"]["cam_a"])
+    (tmp_path / "meta" / "info.json").write_text(_json.dumps(info))
+    with pytest.raises(ValueError, match="declared in info.json"):
+        read_lerobot_dataset(tmp_path, video_key="cam_b")

@@ -41,9 +41,47 @@ def test_parse_hf_link_accepts_valid_refs(text, expected):
     assert parse_hf_link(text) == expected
 
 
-@pytest.mark.parametrize("text", ["demo", "not a link", "a/b/c", "", "justone"])
+@pytest.mark.parametrize("text", ["demo", "not a link", "a/b/c", "", "justone", "a/\tb"])
 def test_parse_hf_link_rejects_non_refs(text):
     assert parse_hf_link(text) is None
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("https://hf.co/datasets/a/b", "a/b"),
+    ("https://huggingface.co/datasets/owner/name/tree/main", "owner/name"),
+    ("a/b.git", "a/b"),  # strip .git
+])
+def test_parse_hf_link_normalizes_url_forms(text, expected):
+    assert parse_hf_link(text) == expected
+
+
+def test_ask_multi_dedupes_repeated_numbers(monkeypatch):
+    import builtins
+    monkeypatch.setattr(builtins, "input", lambda p="": "1,1,3")
+    from lmfao.wizard import ask_multi
+    assert ask_multi("x", [("a", ""), ("b", ""), ("c", "")], [0]) == ["a", "c"]
+
+
+@pytest.mark.parametrize("name", ["lighting.brightness", "lighting.contrast", "lighting.color_temperature"])
+def test_sweep_max_steps_stays_valid_and_distinct(name):
+    d = _STEP_AUGS[name]
+    specs, _ = _build_sweep(name, d, d["max_steps"])
+    vals = [s["pipeline"][0]["params"][d["param"]] for s in specs]
+    assert len(set(vals)) == len(vals)  # no duplicate magnitudes
+    if d["param"] == "factor":
+        assert min(vals) > 0  # a brightness/contrast factor never hits 0
+    if d["param"] == "shift":
+        assert all(-1.0 <= v <= 1.0 for v in vals)  # never clipped past the valid range
+
+
+def test_custom_picker_lists_registered_augmenters(monkeypatch):
+    import builtins
+
+    from lmfao.wizard import _choose_pipeline
+    answers = iter(["4", "1"])  # custom, then pick the first
+    monkeypatch.setattr(builtins, "input", lambda p="": next(answers))
+    picked = _choose_pipeline()
+    assert picked and all("name" in s for s in picked)
 
 
 def _script(answers):

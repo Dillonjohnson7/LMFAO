@@ -228,61 +228,83 @@ def _augment(args: argparse.Namespace) -> int:
     ckpt = out / ".lmfao_resume.pkl"
     sig = _job_signature(mode, payload, args)
 
+    # The output is CLEARED before the source is read (lazy reader), so writing
+    # into (or over) the input would delete the very dataset we are augmenting.
+    if not args.demo and args.input:
+        op, ip = out.resolve(), Path(args.input).resolve()
+        if op == ip or op in ip.parents or ip in op.parents:
+            raise CliError(
+                "--output must be a separate directory from --input; augmenting a "
+                "dataset in place would delete the source"
+            )
+    # A stream key becomes a path component; reject anything that escapes --output.
+    if args.write_video_key is not None:
+        _validate_video_key(args.write_video_key)
+
     # --- resolve the source episodes as a lazy per-index reader (bounded memory) ---
-    if args.demo:
-        demo = _demo_episodes()
-        n_source = len(demo)
-        def get_source(k: int) -> Episode:
-            return demo[k]
-        source_desc = f"{n_source} demo episodes (toy pick_place scene)"
-    else:
-        if not args.input:
-            raise CliError("--input <lerobot-dataset> is required (or use --demo)")
-        try:
+    try:
+        if args.demo:
+            demo = _demo_episodes()
+            if args.limit is not None:
+                demo = demo[: args.limit]
+            n_source = len(demo)
+            def get_source(k: int) -> Episode:
+                return _truncate(demo[k], args.max_frames)
+            source_desc = f"{n_source} demo episodes (toy pick_place scene)"
+        else:
+            if not args.input:
+                raise CliError("--input <lerobot-dataset> is required (or use --demo)")
             import pyarrow.parquet as pq
 
             from lmfao.datasets.lerobot import _episode_records
             recs = _episode_records(Path(args.input), pq)
-        except (OSError, ValueError, KeyError) as e:
-            raise CliError(f"cannot read {args.input}: {e}") from e
-        indices = [int(r["episode_index"]) for r in recs]
-        if args.limit is not None:
-            indices = indices[: args.limit]
-        n_source = len(indices)
-        def get_source(k: int) -> Episode:
-            return read_lerobot_dataset(
-                args.input, video_key=args.video_key, episodes=[indices[k]],
-                max_frames=args.max_frames,
-            )[0]
-        source_desc = f"{n_source} episodes from {args.input}"
-    if n_source == 0:
-        raise CliError("no episodes loaded; nothing to do")
+            indices = [int(r["episode_index"]) for r in recs]
+            if args.limit is not None:
+                indices = indices[: args.limit]
+            n_source = len(indices)
+            def get_source(k: int) -> Episode:
+                return read_lerobot_dataset(
+                    args.input, video_key=args.video_key, episodes=[indices[k]],
+                    max_frames=args.max_frames,
+                )[0]
+            source_desc = f"{n_source} episodes from {args.input}"
+        if n_source == 0:
+            raise CliError("no episodes loaded; nothing to do")
 
-    # --- resume / overwrite handling ---
-    writer = None
-    start = 0
-    if resume and ckpt.exists():
-        import pickle
-        try:
-            saved = pickle.loads(ckpt.read_bytes())
-        except Exception as e:  # noqa: BLE001
-            raise CliError(f"cannot read resume checkpoint {ckpt}: {e}") from e
-        if saved.get("sig") != sig:
-            raise CliError(
-                "cannot --resume: the checkpoint was written for a different run "
-                "(seed/config/cameras changed). Use a fresh --output or drop --resume."
-            )
-        first = get_source(0)
-        writer = _new_writer(out, args, first)
-        writer.load_state_dict(saved["writer"])
-        start = int(saved["source_done"])
-        print(f"resuming: {start}/{n_source} source episodes already done")
-    else:
-        if (out / "meta" / "info.json").exists() and not args.overwrite:
-            raise CliError(f"{out} already contains a dataset; pass --overwrite to replace it")
-        _clear_dataset(out)
-        first = get_source(0)
-        writer = _new_writer(out, args, first)
+        # --- resume / overwrite handling ---
+        writer = None
+        start = 0
+        if resume and ckpt.exists():
+            import pickle
+            try:
+                saved = pickle.loads(ckpt.read_bytes())
+            except Exception as e:  # noqa: BLE001
+                raise CliError(f"cannot read resume checkpoint {ckpt}: {e}") from e
+            if not isinstance(saved, dict) or saved.get("sig") != sig:
+                raise CliError(
+                    "cannot --resume: the checkpoint is unreadable or was written for a "
+                    "different run (seed/config/cameras changed). Use a fresh --output or drop --resume."
+                )
+            first = get_source(0)
+            writer = _new_writer(out, args, first)
+            writer.load_state_dict(saved["writer"])
+            missing = writer.missing_files()
+            if missing:
+                raise CliError(
+                    f"cannot --resume: {len(missing)} output file(s) named in the checkpoint "
+                    f"are missing on disk (e.g. {missing[0]}); the output was modified. "
+                    "Use --overwrite to restart from scratch."
+                )
+            start = int(saved["source_done"])
+            print(f"resuming: {start}/{n_source} source episodes already done")
+        else:
+            if (out / "meta" / "info.json").exists() and not args.overwrite:
+                raise CliError(f"{out} already contains a dataset; pass --overwrite to replace it")
+            _clear_dataset(out)
+            first = get_source(0)
+            writer = _new_writer(out, args, first)
+    except (OSError, ValueError, KeyError) as e:
+        raise CliError(f"cannot start augmentation: {e}") from e
 
     # --- stream: one source at a time -> its variants -> checkpoint ---
     generate = (
@@ -343,6 +365,30 @@ def _clear_dataset(out: Path) -> None:
         p = out / sub
         if p.exists():
             shutil.rmtree(p)
+
+
+def _validate_video_key(key: str) -> None:
+    if (not key) or ("/" in key) or ("\\" in key) or ("\x00" in key) or key in (".", "..") \
+            or key.startswith(("/", "~")):
+        raise CliError(
+            f"invalid --write-video-key {key!r}: must be a plain stream name "
+            "(e.g. observation.images.wrist), not a path"
+        )
+
+
+def _truncate(ep: Episode, cap: int | None) -> Episode:
+    """Truncate a demo episode to its first ``cap`` frames (real data is capped at
+    read time via max_frames; the demo scene is built in memory)."""
+    if cap is None or ep.num_frames <= cap:
+        return ep
+    return Episode(
+        frames=ep.frames[:cap],
+        state=None if ep.state is None else ep.state[:cap],
+        actions=None if ep.actions is None else ep.actions[:cap],
+        fps=ep.fps, task=ep.task,
+        camera_poses=None if ep.camera_poses is None else ep.camera_poses[:cap],
+        intrinsics=ep.intrinsics, metadata=ep.metadata,
+    )
 
 
 def _generate(args: argparse.Namespace) -> int:
@@ -552,12 +598,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if getattr(args, "func", None) is None:
+    func = getattr(args, "func", None)
+    if func is None:
         # Bare `lmfao` with no subcommand: launch the interactive wizard.
-        from lmfao.wizard import run_wizard
-        return run_wizard()
+        func = _wizard
     try:
-        return args.func(args)
+        return func(args)
     except CliError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2

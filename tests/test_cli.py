@@ -251,6 +251,71 @@ def test_augment_resume_refuses_mismatched_config(tmp_path, monkeypatch):
     assert rc == 2
 
 
+def test_augment_refuses_output_equal_to_input(tmp_path, capsys):
+    src = tmp_path / "src"
+    assert main(["augment", "--demo", "--config", str(_pipe(tmp_path)), "--output", str(src)]) == 0
+    before = sorted(p.name for p in (src / "data" / "chunk-000").glob("*.parquet"))
+    rc = main(["augment", "--input", str(src), "--output", str(src),
+               "--config", str(_pipe(tmp_path)), "--overwrite"])
+    assert rc == 2
+    assert "separate directory" in capsys.readouterr().err
+    assert sorted(p.name for p in (src / "data" / "chunk-000").glob("*.parquet")) == before  # intact
+
+
+def test_augment_rejects_path_traversal_write_key(tmp_path, capsys):
+    rc = main(["augment", "--demo", "--config", str(_pipe(tmp_path)),
+               "--output", str(tmp_path / "o"), "--write-video-key", "../../evil"])
+    assert rc == 2
+    assert "invalid --write-video-key" in capsys.readouterr().err
+    assert not (tmp_path / "evil").exists()
+
+
+def test_augment_demo_respects_limit_and_max_frames(tmp_path):
+    out = tmp_path / "o"
+    assert main(["augment", "--demo", "--limit", "1", "--max-frames", "2",
+                 "--config", str(_pipe(tmp_path)), "--output", str(out)]) == 0
+    back = read_lerobot_dataset(out)
+    assert len(back) == 1 and back[0].num_frames == 2
+
+
+def test_resume_refuses_when_output_files_deleted(tmp_path, monkeypatch):
+    import lmfao.cli as climod
+    cfg = _sweep_cfg(tmp_path)
+    out = tmp_path / "part"
+    real_ckpt = climod._checkpoint
+
+    def crashing(ckpt, sig, done, writer):
+        real_ckpt(ckpt, sig, done, writer)
+        if done == 2:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(climod, "_checkpoint", crashing)
+    with pytest.raises(KeyboardInterrupt):
+        main(["augment", "--demo", "--config", str(cfg), "--seed", "7", "--output", str(out), "--resume"])
+    monkeypatch.setattr(climod, "_checkpoint", real_ckpt)
+    # delete the already-written data files, then resume -> must refuse, not exit 0
+    for f in (out / "data" / "chunk-000").glob("*.parquet"):
+        f.unlink()
+    rc = main(["augment", "--demo", "--config", str(cfg), "--seed", "7", "--output", str(out), "--resume"])
+    assert rc == 2
+
+
+def test_resume_corrupt_checkpoint_is_clean_error(tmp_path, capsys):
+    import pickle
+    out = tmp_path / "c"
+    out.mkdir()
+    (out / ".lmfao_resume.pkl").write_bytes(pickle.dumps(["not", "a", "dict"]))
+    rc = main(["augment", "--demo", "--config", str(_pipe(tmp_path)), "--output", str(out), "--resume"])
+    assert rc == 2
+    assert "error:" in capsys.readouterr().err
+
+
+def _pipe(tmp_path):
+    p = tmp_path / "pipe.json"
+    p.write_text(json.dumps([{"name": "lighting.brightness", "params": {}, "probability": 1.0}]))
+    return p
+
+
 def test_augment_sweep_config_produces_one_output_per_spec(tmp_path):
     cfg = tmp_path / "sweep.json"
     cfg.write_text(json.dumps({"sweep": [

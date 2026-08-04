@@ -141,6 +141,7 @@ def ask_multi(label: str, options: list[tuple[str, str]], defaults: list[int]) -
         except ValueError:
             print(_red("  Enter numbers like 1,3,4."))
             continue
+        idx = list(dict.fromkeys(idx))  # dedupe, preserve order (1,1,3 -> 1,3)
         if all(0 <= i < len(options) for i in idx) and idx:
             return [options[i][0] for i in idx]
         print(_red(f"  Use numbers between 1 and {len(options)}."))
@@ -153,20 +154,32 @@ def parse_hf_link(text: str) -> str | None:
     """Return an ``owner/name`` repo id if ``text`` looks like a Hugging Face
     dataset reference, else None."""
     t = text.strip()
+    was_url = False
     for prefix in (
         "https://huggingface.co/datasets/",
         "http://huggingface.co/datasets/",
+        "https://hf.co/datasets/",
+        "http://hf.co/datasets/",
         "huggingface.co/datasets/",
         "hf.co/datasets/",
         "https://huggingface.co/",
     ):
         if t.startswith(prefix):
             t = t[len(prefix):]
+            was_url = True
             break
     t = t.strip("/").split("?")[0].split("#")[0]
-    parts = t.split("/")
-    if len(parts) == 2 and all(parts) and " " not in t:
-        return t
+    parts = [p for p in t.split("/") if p]
+    if was_url:
+        # A URL may carry a subpath like owner/name/tree/main — keep owner/name.
+        parts = parts[:2]
+    if len(parts) == 2:
+        owner, name = parts
+        if name.endswith(".git"):
+            name = name[:-4]
+        candidate = f"{owner}/{name}"
+        if owner and name and not any(c.isspace() for c in candidate):
+            return candidate
     return None
 
 
@@ -177,17 +190,20 @@ def parse_hf_link(text: str) -> str | None:
 # videos; magnitude-only effects (noise) emit N.
 # ``pos`` / ``neg`` name the direction of a + / - step so labels read plainly
 # (e.g. color temperature + is cooler, - is warmer, matching the augmenter).
+# ``max_steps`` is the largest step count that stays valid+distinct: past it a
+# darkening factor would hit 0 (brightness/contrast) or the shift would clip to
+# ±1 and repeat (color temperature). Noise has no hard ceiling.
 _STEP_AUGS: dict[str, dict] = {
     "lighting.brightness": dict(param="factor", base=1.0, inc=0.05, bidir=True, scale=100, unit="%",
-                                pos="brighter", neg="darker", desc="brighter / darker"),
+                                pos="brighter", neg="darker", desc="brighter / darker", max_steps=19),
     "lighting.contrast": dict(param="factor", base=1.0, inc=0.10, bidir=True, scale=100, unit="%",
-                              pos="more", neg="less", desc="more / less contrast"),
+                              pos="more", neg="less", desc="more / less contrast", max_steps=9),
     "lighting.color_temperature": dict(param="shift", base=0.0, inc=0.2, bidir=True, scale=1, unit="",
-                                       pos="cooler", neg="warmer", desc="cooler / warmer"),
+                                       pos="cooler", neg="warmer", desc="cooler / warmer", max_steps=5),
     "noise.gaussian": dict(param="sigma", base=0.0, inc=0.02, bidir=False, scale=100, unit="%",
-                           desc="sensor grain"),
+                           desc="sensor grain", max_steps=None),
     "noise.uniform": dict(param="amplitude", base=0.0, inc=0.02, bidir=False, scale=100, unit="%",
-                          desc="quantisation noise"),
+                          desc="quantisation noise", max_steps=None),
 }
 
 
@@ -269,9 +285,8 @@ def _choose_pipeline() -> list[dict]:
     if choice != "custom":
         return _PRESETS[choice]
 
-    from lmfao.registry import list_augmenter_info
-    info = list_augmenter_info()
-    names = sorted(info) if isinstance(info, dict) else sorted(a["name"] for a in info)
+    from lmfao.registry import list_augmenters
+    names = sorted(list_augmenters())
     opts = [(n, "") for n in names]
     default_idx = [i for i, n in enumerate(names)
                    if n in ("lighting.brightness", "lighting.color_temperature", "noise.gaussian")]
@@ -442,6 +457,11 @@ def run_wizard() -> int:
                 arrow = "+/-" if d["bidir"] else "+"
                 n = ask_int(f"  {name} ({arrow}, {_fmt(d['inc'] * d['scale'])}{d['unit']} per step) — steps?",
                             default=3, minimum=1)
+                mx = d.get("max_steps")
+                if mx is not None and n > mx:
+                    print(_dim(f"    capped at {mx} steps — beyond that {name} would "
+                               "repeat or go out of range"))
+                    n = mx
                 aug_specs, mags = _build_sweep(name, d, n)
                 specs.extend(aug_specs)
                 rows.append((name, n, len(aug_specs), mags))
@@ -487,7 +507,7 @@ def run_wizard() -> int:
 
         # generate
         pipeline = _choose_pipeline()
-        n_synth = ask_int("How many synthetic novel-view episodes per source?", default=2, minimum=1)
+        n_synth = ask_int("How many synthetic novel-view episodes in total?", default=2, minimum=1)
         work = ask_int("Working resolution for the reference renderer (px)", default=96, minimum=16)
         assume = True if src["kind"] != "demo" else False
         limit = ask_int("Limit to N source episodes (0 = all)", default=1, minimum=0)
@@ -498,7 +518,7 @@ def run_wizard() -> int:
             ("source", "demo scene" if src["kind"] == "demo" else src["path"]),
             ("camera", src["video_key"] or "-"),
             ("operation", "generate (miniworld + augment)"),
-            ("synthetic", f"{n_synth} per source episode"),
+            ("synthetic", f"{n_synth} total (spread across sources)"),
             ("working res", f"{work}px"),
             ("assume poses", "yes (real data has none)" if assume else "no (demo has real poses)"),
             ("augmentations", ", ".join(s["name"] for s in pipeline)),
