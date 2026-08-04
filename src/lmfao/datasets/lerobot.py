@@ -29,6 +29,7 @@ from typing import Any
 
 import numpy as np
 
+from lmfao.datasets._stats import reduce_samples, stats_from_samples, stats_to_lists
 from lmfao.datasets.episode import Episode
 
 
@@ -317,6 +318,36 @@ def read_lerobot_dataset(
 # ---------------------------------------------------------------- writing
 
 
+def _write_tasks_parquet(pq, pa, path: Path, tasks: list[str]) -> None:
+    """Write meta/tasks.parquet with the pandas index metadata LeRobot expects.
+
+    LeRobot loads tasks with pandas and uses the task *string* as the DataFrame
+    index; without this metadata it gets a RangeIndex and task lookups silently
+    fail. (This is the ``__index_level_0__`` convention the reader also handles.)
+    """
+    table = pa.table({
+        "task_index": pa.array(list(range(len(tasks))), type=pa.int64()),
+        "task": pa.array(tasks, type=pa.string()),
+    })
+    pandas_meta = {
+        "index_columns": ["task"],
+        "column_indexes": [{
+            "name": None, "field_name": None, "pandas_type": "unicode",
+            "numpy_type": "object", "metadata": {"encoding": "UTF-8"},
+        }],
+        "columns": [
+            {"name": "task_index", "field_name": "task_index", "pandas_type": "int64",
+             "numpy_type": "int64", "metadata": None},
+            {"name": "task", "field_name": "task", "pandas_type": "unicode",
+             "numpy_type": "object", "metadata": None},
+        ],
+        "creator": {"library": "pyarrow", "version": pa.__version__},
+        "pandas_version": "2.0.0",
+    }
+    table = table.replace_schema_metadata({b"pandas": json.dumps(pandas_meta).encode()})
+    pq.write_table(table, path)
+
+
 def _json_default(obj: Any) -> Any:
     """JSON fallback that keeps numpy values round-trippable.
 
@@ -467,6 +498,7 @@ def write_lerobot_dataset(
     episode_indices: list[int] = []
     task_indices: list[int] = []
     ep_records: list[dict] = []
+    samples: dict[str, list] = {}  # per-feature reduced samples for meta/stats.json
 
     cursor = 0
     for ei, ep in enumerate(episodes):
@@ -486,21 +518,38 @@ def write_lerobot_dataset(
             frame_indices.append(f)
             episode_indices.append(ei)
             task_indices.append(tindex)
-        ep_records.append(
-            {
-                "episode_index": ei,
-                "tasks": [ep.task],
-                "length": n,
-                "data/chunk_index": 0,
-                "data/file_index": 0,
-                "dataset_from_index": cursor,
-                "dataset_to_index": cursor + n,
-                f"videos/{video_key}/chunk_index": 0,
-                f"videos/{video_key}/file_index": 0,
-                f"videos/{video_key}/from_timestamp": cursor / fps,
-                f"videos/{video_key}/to_timestamp": (cursor + n) / fps,
-            }
-        )
+        rec = {
+            "episode_index": ei,
+            "tasks": [ep.task],
+            "length": n,
+            "data/chunk_index": 0,
+            "data/file_index": 0,
+            "dataset_from_index": cursor,
+            "dataset_to_index": cursor + n,
+            f"videos/{video_key}/chunk_index": 0,
+            f"videos/{video_key}/file_index": 0,
+            f"videos/{video_key}/from_timestamp": cursor / fps,
+            f"videos/{video_key}/to_timestamp": (cursor + n) / fps,
+        }
+        # Per-episode normalization stats (LeRobot loads the aggregate at train time).
+        rgb = _to_uint8_rgb(ep.frames)  # always 3-channel; matches the written video
+        img = reduce_samples(rgb, is_image=True, seed=ei)
+        ep_stats = {video_key: stats_from_samples(img, count=n, image_channels=int(rgb.shape[-1]))}
+        samples.setdefault(video_key, []).append(img)
+        if state_dim > 0:
+            sv = np.asarray(ep.state, dtype=np.float64) if ep.state is not None else np.zeros((n, state_dim))
+            red = reduce_samples(sv, is_image=False)
+            ep_stats["observation.state"] = stats_from_samples(red, count=n)
+            samples.setdefault("observation.state", []).append(red)
+        if action_dim > 0:
+            av_ = np.asarray(ep.actions, dtype=np.float64) if ep.actions is not None else np.zeros((n, action_dim))
+            red = reduce_samples(av_, is_image=False)
+            ep_stats["action"] = stats_from_samples(red, count=n)
+            samples.setdefault("action", []).append(red)
+        for feat, stt in ep_stats.items():
+            for sk, val in stats_to_lists(stt).items():
+                rec[f"stats/{feat}/{sk}"] = val
+        ep_records.append(rec)
         cursor += n
 
     # --- video first: encoding is the step most likely to fail, so do it before
@@ -562,11 +611,17 @@ def write_lerobot_dataset(
     epath.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.table(ep_cols), epath)
 
-    # --- tasks parquet ---
-    tpath = root / "meta" / "tasks.parquet"
-    pq.write_table(
-        pa.table({"task_index": list(range(len(tasks))), "task": tasks}), tpath
-    )
+    # --- tasks parquet (with the pandas index metadata LeRobot expects) ---
+    _write_tasks_parquet(pq, pa, root / "meta" / "tasks.parquet", tasks)
+
+    # --- aggregate stats.json (LeRobot normalizes training inputs from this) ---
+    stats = {}
+    for feat, reds in samples.items():
+        allr = np.concatenate(reds, axis=0)
+        channels = allr.shape[1] if feat == video_key else None
+        st = stats_from_samples(allr, count=int(all_frames.shape[0]), image_channels=channels)
+        stats[feat] = stats_to_lists(st)
+    (root / "meta" / "stats.json").write_text(json.dumps(stats, indent=1))
 
     # --- provenance sidecar (plan §8d: keep synthetic episodes distinguishable) ---
     # Reader-owned keys are recomputed on every read; persisting them here would
@@ -623,6 +678,7 @@ class LeRobotStreamingWriter:
         self._tasks: list[str] = []
         self._task_index: dict[str, int] = {}
         self._provenance: list[dict] = []
+        self._samples: dict[str, list] = {}  # per-feature reduced samples for stats.json
         self._global_index = 0
         self._h: int | None = None
         self._w: int | None = None
@@ -647,7 +703,8 @@ class LeRobotStreamingWriter:
     def state_dict(self) -> dict:
         return {
             "rows": self._rows, "tasks": self._tasks, "task_index": self._task_index,
-            "provenance": self._provenance, "global_index": self._global_index,
+            "provenance": self._provenance, "samples": self._samples,
+            "global_index": self._global_index,
             "h": self._h, "w": self._w,
             "video_key": self.video_key, "fps": self.fps,
             "state_dim": self.state_dim, "action_dim": self.action_dim,
@@ -658,6 +715,7 @@ class LeRobotStreamingWriter:
         self._tasks = state["tasks"]
         self._task_index = state["task_index"]
         self._provenance = state["provenance"]
+        self._samples = state.get("samples", {})
         self._global_index = state["global_index"]
         self._h, self._w = state["h"], state["w"]
 
@@ -723,7 +781,11 @@ class LeRobotStreamingWriter:
         dpath.parent.mkdir(parents=True, exist_ok=True)
         self._pq.write_table(table, dpath)
 
-        self._rows.append({
+        # Per-feature normalization stats (LeRobot needs these to train); also
+        # accumulate the reduced samples for the aggregate meta/stats.json.
+        ep_stats = self._episode_stats(frames, states, actions, n, ei)
+
+        row = {
             "episode_index": ei,
             "tasks": [ep.task],
             "length": n,
@@ -735,11 +797,30 @@ class LeRobotStreamingWriter:
             f"videos/{self.video_key}/file_index": ei,
             f"videos/{self.video_key}/from_timestamp": 0.0,
             f"videos/{self.video_key}/to_timestamp": n / self.fps,
-        })
+        }
+        for feat, st in ep_stats.items():
+            for sk, val in stats_to_lists(st).items():
+                row[f"stats/{feat}/{sk}"] = val
+        self._rows.append(row)
         reader_owned = {"episode_index", "source_dataset", "video_key"}
         self._provenance.append({k: v for k, v in ep.metadata.items() if k not in reader_owned})
         self._global_index += n
         return ei
+
+    def _episode_stats(self, frames, states, actions, n, ei) -> dict:
+        ep_stats: dict[str, dict] = {}
+        img = reduce_samples(frames, is_image=True, seed=ei)
+        ep_stats[self.video_key] = stats_from_samples(img, count=n, image_channels=int(frames.shape[-1]))
+        self._samples.setdefault(self.video_key, []).append(img)
+        if self.state_dim > 0:
+            red = reduce_samples(np.asarray(states, dtype=np.float64), is_image=False)
+            ep_stats["observation.state"] = stats_from_samples(red, count=n)
+            self._samples.setdefault("observation.state", []).append(red)
+        if self.action_dim > 0:
+            red = reduce_samples(np.asarray(actions, dtype=np.float64), is_image=False)
+            ep_stats["action"] = stats_from_samples(red, count=n)
+            self._samples.setdefault("action", []).append(red)
+        return ep_stats
 
     def close(self) -> Path:
         import pyarrow as pa
@@ -778,10 +859,18 @@ class LeRobotStreamingWriter:
         epath = self.root / "meta" / "episodes" / "chunk-000" / "file-000.parquet"
         epath.parent.mkdir(parents=True, exist_ok=True)
         self._pq.write_table(pa.table(ep_cols), epath)
-        self._pq.write_table(
-            pa.table({"task_index": list(range(len(self._tasks))), "task": self._tasks}),
-            self.root / "meta" / "tasks.parquet",
-        )
+        _write_tasks_parquet(self._pq, pa, self.root / "meta" / "tasks.parquet", self._tasks)
+
+        # Aggregate normalization stats over the whole dataset (LeRobot loads
+        # these from meta/stats.json to normalize during training).
+        stats = {}
+        for feat, reds in self._samples.items():
+            allr = np.concatenate(reds, axis=0)
+            channels = allr.shape[1] if feat == self.video_key else None
+            st = stats_from_samples(allr, count=int(self._global_index), image_channels=channels)
+            stats[feat] = stats_to_lists(st)
+        (self.root / "meta" / "stats.json").write_text(json.dumps(stats, indent=1))
+
         (self.root / "meta" / "lmfao_provenance.json").write_text(
             json.dumps(self._provenance, indent=1, default=_json_default)
         )

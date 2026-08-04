@@ -269,6 +269,41 @@ def test_streaming_writer_missing_files_detects_deleted_output(tmp_path):
     assert len(w.missing_files()) == 1
 
 
+def test_writers_emit_lerobot_training_metadata(tmp_path):
+    """stats.json + pandas-indexed tasks + per-episode stats columns — the
+    metadata LeRobot needs to normalize inputs at training time."""
+    import json as _json
+
+    import pyarrow.parquet as pq
+
+    for label, root in [("batch", tmp_path / "b"), ("stream", tmp_path / "s")]:
+        eps = [_episode(task="pick", frames=6), _episode(task="place", frames=6)]
+        if label == "batch":
+            write_lerobot_dataset(eps, root)
+        else:
+            w = LeRobotStreamingWriter(root, video_key="observation.images.render", fps=30.0,
+                                       state_dim=eps[0].state.shape[1], action_dim=eps[0].actions.shape[1])
+            for e in eps:
+                w.add_episode(e)
+            w.close()
+
+        stats = _json.loads((root / "meta" / "stats.json").read_text())
+        assert {"observation.state", "action"} <= set(stats)
+        img_key = next(k for k in stats if "images" in k or "render" in k)
+        for feat in stats:
+            assert {"min", "max", "mean", "std", "count", "q01", "q99"} <= set(stats[feat])
+        # image stats are [C, 1, 1]
+        assert len(stats[img_key]["mean"]) == 3 and len(stats[img_key]["mean"][0]) == 1
+        # tasks.parquet carries pandas index metadata (task as index)
+        tt = pq.read_table(root / "meta" / "tasks.parquet")
+        assert b"pandas" in (tt.schema.metadata or {})
+        # per-episode stats columns present
+        ep = pq.read_table(root / "meta" / "episodes" / "chunk-000" / "file-000.parquet")
+        assert any(c.startswith("stats/") for c in ep.column_names)
+        # and the dataset still round-trips
+        assert len(read_lerobot_dataset(root)) == 2
+
+
 def test_read_absent_declared_video_key_is_clear_error(tmp_path):
     import json as _json
 
