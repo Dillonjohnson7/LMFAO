@@ -1,76 +1,133 @@
-# Training run — pick_place_v2 → augment → ACT
+# Eval run — recollect demos → augment arms → train → compare
 
-Operational checklist for the first full-scale ACT run on LMFAO-augmented
-`Dillonjohnson/pick_place_v2`. Complements `docs/STATUS.md` §4B.
+Goal: measure whether LMFAO's CLI augmentations actually improve policy
+robustness. Not "train one big model on old HF data" — **recollect**, expand
+with the CLI, train matched policies, compare on the robot.
 
-## What's already proven
+## Experiment design
 
-- `lmfao augment` is production-ready at native resolution (streaming + `--resume`).
-- Augmented LeRobot v3 output loads in lerobot 0.6.2.
-- ACT smoke test on RunPod (RTX A4500): loss 74 → 22 over 10 steps.
+| arm | training data | what it tests |
+| --- | --- | --- |
+| `stock` | freshly recorded demos only | baseline |
+| `lighting` | stock + brightness/contrast/temperature | lighting robustness |
+| `noise` | stock + gaussian/uniform | sensor noise robustness |
+| `occlusion` | stock + box / border / moving occluders | partial view robustness |
+| `spatial` | stock + random crop | framing / crop robustness |
+| `full` | stock + combined ADJUST pipeline | all-effects cocktail |
 
-## What this run does
+Same ACT hyperparameters and seed across arms. The only variable is the dataset.
 
-1. **Collect demos** — use the canonical HF dataset (already recorded on SO101 /
-   wrist cam). No new teleop in this repo.
-2. **Expand demos** — season every episode with lighting / noise / occlusion /
-   crop variants (`configs/training/pick_place_v2_pipeline.json`).
-3. **Train policy** — ACT via upstream `lerobot-train` on a CUDA pod.
+Configs live under `configs/training/arms/`. Scripts:
 
-## Commands
+1. `scripts/record_demos.sh` — teleop on the SO101 workstation
+2. `scripts/augment_eval_arms.sh` — build each arm with `lmfao augment`
+3. `scripts/train_eval_arms.sh` — one ACT checkpoint per arm (CUDA pod)
+
+## 1. Recollect new demos (robot workstation)
+
+Do **not** reuse `Dillonjohnson/pick_place_v2` for this eval — that set was for
+building/smoke-testing LMFAO. Record a new session under a controlled layout.
 
 ```bash
-# 0. Install LMFAO (CPU machine is fine for steps 1–2)
-python3.12 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev,lerobot]" huggingface_hub
-
-# 1. Download demonstrations (gated HF dataset — token required)
-export LMFAO_DATA_ROOT=/workspace/data   # or any non-iCloud path
-export HF_TOKEN=hf_...                   # set locally; never commit / paste into chat
-./scripts/download_demos.sh
-
-# 2. Full augmentation (all episodes, 14 variants + originals, resume-safe)
-./scripts/augment_full.sh
-# Quick sanity (optional): VARIANTS=2 INPUT=... OUTPUT=.../smoke ./scripts/augment_full.sh
-
-# 3. On a CUDA pod — install LeRobot 0.6.x (Python 3.12, av pinned <16)
-uv venv --python 3.12 /workspace/v312
-uv pip install --python /workspace/v312 \
-  "git+https://github.com/huggingface/lerobot.git" \
-  datasets "av>=15.0.0,<16.0.0" torchcodec accelerate
-
-# Transfer the augmented dataset (avoid macOS AppleDouble sidecars):
-#   COPYFILE_DISABLE=1 tar ...   OR   huggingface-cli upload ...
-
-# 4. Train ACT
-export DATASET_ROOT=/data/pick_place_v2_augmented
-export LEROBOT_BIN=/workspace/v312/bin/lerobot-train
-./scripts/train_act.sh
-
-# Smoke (10 steps, no checkpoint):
-STEPS=10 BATCH_SIZE=2 SAVE_CHECKPOINT=false ./scripts/train_act.sh
+# On the SO101 machine, after calibration + hf auth login:
+FOLLOWER_PORT=/dev/ttyACM0 \
+LEADER_PORT=/dev/ttyACM1 \
+HF_USER=Dillonjohnson \
+DATASET_NAME=pick_place_v3 \
+NUM_EPISODES=50 \
+TASK="pick the cube and place it in the bin" \
+./scripts/record_demos.sh
 ```
 
-## Default experiment knobs
+Protocol:
+
+- Fix lighting, camera mounting, and table scene for the whole session.
+- Prefer slow, consistent teleop; redo bad episodes.
+- Optional: append a ~30s slow scene sweep after task episodes (future GENERATE
+  hygiene; not required for ADJUST).
+- Keep the camera set identical for record / train / rollout (wrist-only by
+  default in the script).
+
+Local LeRobot path is typically
+`~/.cache/huggingface/lerobot/${HF_USER}/${DATASET_NAME}`. Point `STOCK` at that
+root (or a copy on a fast disk).
+
+## 2. Augment with the CLI
+
+CPU machine is fine:
+
+```bash
+pip install -e ".[dev,lerobot]"
+export STOCK=/path/to/pick_place_v3          # freshly recorded root
+export OUT_ROOT=/path/to/eval_arms
+./scripts/augment_eval_arms.sh
+# subset: ARMS="lighting noise" ./scripts/augment_eval_arms.sh
+```
+
+Each arm gets `--include-original` so training still sees the real demos plus
+seasoned variants (`VARIANTS` default 8).
+
+## 3. Train several policies
+
+On a CUDA pod (LeRobot 0.6.x recipe in `docs/STATUS.md` §2):
+
+```bash
+export OUT_ROOT=/data/eval_arms
+export RUNS_ROOT=/data/runs/eval_arms
+export LEROBOT_BIN=/workspace/v312/bin/lerobot-train
+./scripts/train_eval_arms.sh
+
+# smoke one arm first:
+ARMS=stock STEPS=10 BATCH_SIZE=2 SAVE_CHECKPOINT=false ./scripts/train_eval_arms.sh
+```
+
+Transfer datasets with `COPYFILE_DISABLE=1 tar` or `hf upload` (avoid macOS
+`._*` AppleDouble sidecars).
+
+## 4. Compare how well the CLI helps
+
+Loss curves are not the score. Compare **physical rollout success** under
+held-out conditions the stock demos never saw:
+
+| condition | example |
+| --- | --- |
+| lighting shift | room lights dimmed / warmer lamp |
+| framing shift | camera nudged a few cm / slight zoom |
+| occlusion | small object at image border |
+| noise-ish | lower exposure / gain bump |
+
+For each arm checkpoint, run N trials (e.g. 20) of the same pick→place task and
+log success / failure. Suggested summary table:
+
+```text
+arm        | train lighting | held-out lighting | held-out framing
+-----------|----------------|-------------------|-----------------
+stock      |                |                   |
+lighting   |                |                   |
+noise      |                |                   |
+occlusion  |                |                   |
+spatial    |                |                   |
+full       |                |                   |
+```
+
+A family "works" if its arm beats `stock` on the matching held-out condition
+without collapsing the in-distribution score.
+
+Eval rollouts can reuse LeRobot recording with `--policy.path=...` into an
+`eval_*` dataset (see upstream `lerobot-record` docs).
+
+## Default knobs
 
 | knob | default | notes |
 | --- | --- | --- |
-| variants | 14 | per source episode, plus `--include-original` |
-| seed | 7 | shared by augment + train |
-| ACT steps | 100000 | override with `STEPS=` |
-| batch size | 8 | smoke used 2 on A4500 |
+| `NUM_EPISODES` | 50 | recording session size |
+| `VARIANTS` | 8 | seasoned copies per source episode |
+| `STEPS` | 100000 | matched across arms |
+| `SEED` | 7 | shared augment + train seed |
 
-## Success criteria (beyond loss)
+## Out of scope for this eval
 
-Loss alone is not enough. Before calling the run done:
-
-1. Hold out a lighting / framing condition not seen in training.
-2. Define a physical rollout success metric on the SO101 (e.g. pick→place
-   success over N trials).
-3. Compare at least two datasets: originals-only vs originals+augmented.
-
-## Out of scope here
-
-- New teleop recording (use LeRobot's `lerobot-record` on the robot workstation).
-- `lmfao generate` / Gaussian-splat novel views (experimental; not training-grade).
-- Diffusion policy.
+- Re-downloading / reusing `pick_place_v2` as the training set
+- `lmfao generate` / Gaussian-splat novel views
+- Diffusion policy
+- Tuning augmenter magnitudes before the first stock-vs-arms table exists

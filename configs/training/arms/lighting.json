@@ -1,0 +1,5 @@
+[
+  {"name": "lighting.brightness", "params": {}, "probability": 1.0},
+  {"name": "lighting.contrast", "params": {}, "probability": 1.0},
+  {"name": "lighting.color_temperature", "params": {}, "probability": 1.0}
+]

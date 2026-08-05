@@ -1,0 +1,5 @@
+[
+  {"name": "occlusion.border_intrusion", "params": {}, "probability": 0.7},
+  {"name": "occlusion.sequence_box", "params": {}, "probability": 0.5},
+  {"name": "occlusion.moving_box", "params": {}, "probability": 0.5}
+]

@@ -80,9 +80,11 @@ lighting, streaming writer + `--resume`, and the browser LeRobot-folder ingest +
 job.json export in `web/`.
 
 ### Canonical data
-The **only** dataset for this project is HF `Dillonjohnson/pick_place_v2` (SO101 /
-`so_follower`, wrist camera; the front camera isn't downloaded). Never the old
-Downloads teleop folder.
+- **Dev / smoke dataset:** HF `Dillonjohnson/pick_place_v2` (SO101 / `so_follower`,
+  wrist camera) — used to build and prove LMFAO's LeRobot export + ACT load.
+- **Eval dataset:** a **newly recorded** session (see `scripts/record_demos.sh` /
+  `docs/TRAINING_RUN.md`). Do not treat `pick_place_v2` as the comparative-eval
+  training set. Never the old Downloads teleop folder.
 
 ---
 
@@ -175,20 +177,22 @@ delete after finishing the swap on any servers).
 - Consider enabling GitHub **push protection / secret scanning** on the repo
   (Settings → Code security) so GitHub itself blocks future secret pushes.
 
-**B. Full-scale training run (the real goal)** — kickoff scaffolding landed
-Everything is proven at smoke scale. Reproducible path is now in-repo:
+**B. Comparative eval run (the real goal)** — scaffolding landed
+Everything is proven at smoke scale. The next experiment is **not** reusing
+`pick_place_v2` — it is:
 
-- Checklist: `docs/TRAINING_RUN.md`
-- Pipeline config: `configs/training/pick_place_v2_pipeline.json`
-- Scripts: `scripts/download_demos.sh` → `scripts/augment_full.sh` →
-  `scripts/train_act.sh` (CUDA pod)
+1. **Recollect** fresh SO101 demos (`scripts/record_demos.sh` on the robot box)
+2. **Augment** with the CLI into matched arms (stock / lighting / noise /
+   occlusion / spatial / full) via `scripts/augment_eval_arms.sh`
+3. **Train** one ACT policy per arm with identical hparams
+   (`scripts/train_eval_arms.sh` on a CUDA pod)
+4. **Compare** physical rollout success under held-out lighting / framing /
+   occlusion — that is how we tell whether the CLI helps
 
-The real run: `lmfao augment` over all 45 `pick_place_v2` episodes at full
-length with N variants (drop the `--limit`/`--max-frames` caps), then train ACT
-for real steps on a pod. Use `COPYFILE_DISABLE=1 tar` or `huggingface-cli upload`
-for transfer (avoid the AppleDouble trap). A full augment is ~30-60 min locally;
-reuse the pod recipe (§2). This cloud agent host has **no GPU** — augment here,
-train on RunPod.
+Checklist + table: `docs/TRAINING_RUN.md`. Arm configs:
+`configs/training/arms/*.json`. Transfer with `COPYFILE_DISABLE=1 tar` or
+`huggingface-cli upload` (avoid AppleDouble). This cloud agent has **no robot
+and no GPU** — recording is on the SO101 workstation; training on RunPod.
 
 **C. `lmfao generate` quality (experimental → trainable)**
 The novel-view path produces 96×54, blurry, assumed-pose frames. Making it
