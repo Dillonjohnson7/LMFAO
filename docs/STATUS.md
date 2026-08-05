@@ -21,11 +21,11 @@ clips, written back out as a ready-to-train LeRobot dataset.
 >    tree** — not even temporarily. Use a scratch dir OUTSIDE the repo (e.g. `/tmp`).
 >    Never run `ssh-keygen -f <path-in-repo>`.
 > 3. **Before any commit, run the secret scan.** Enable the committed hook once
->    per clone: `pip install pre-commit && python -m pre_commit install` (see
+>    per clone: `pip install pre-commit && python3 -m pre_commit install` (see
 >    `.pre-commit-config.yaml`). Use `python -m` so a user-local install works
 >    even when `~/.local/bin` is not on `PATH`. If install refuses because
 >    `core.hooksPath` is set (Cursor agents), scan on demand with
->    `python -m pre_commit run --all-files` — do not unset the agent hooks path.
+>    `python3 -m pre_commit run --all-files` — do not unset the agent hooks path.
 >    CI also runs `gitleaks` on every PR/push to `main`. If gitleaks flags
 >    anything, STOP.
 > 4. **Never paste API keys / tokens into the chat or terminal transcript.** If a
@@ -155,9 +155,9 @@ leaked secret as compromised and rotate/revoke it.
 - `.gitignore` blocks key material: `*.pub`, `*.pem`, `*_key`, `id_ed25519*`,
   `id_rsa*`, `pod_key*`, `.runpod_key`, `.env`, `.env.*`.
 - **Committed** gitleaks pre-commit hook (`.pre-commit-config.yaml`, rev pinned).
-  Enable once per clone: `pip install pre-commit && python -m pre_commit install`.
+  Enable once per clone: `pip install pre-commit && python3 -m pre_commit install`.
   Cursor agents set `core.hooksPath`, so install is refused there — use
-  `python -m pre_commit run --all-files` (or CI) instead; never unset the agent
+  `python3 -m pre_commit run --all-files` (or CI) instead; never unset the agent
   hooks path.
 - **CI** runs `gitleaks/gitleaks-action@v3` on every PR and push to `main`
   (`.github/workflows/ci.yml` → `secrets` job).
@@ -176,8 +176,8 @@ done.
 **A. Security — done (repo-side + owner-side)**
 Repo now ships portable gitleaks (pre-commit + CI). Owner finished SSH rotation,
 other-repo audit, and GitHub secret scanning / push protection. Remaining hygiene:
-on every fresh clone, run `python -m pre_commit install` before the first commit
-(or `python -m pre_commit run --all-files` when `core.hooksPath` blocks install).
+on every fresh clone, run `python3 -m pre_commit install` before the first commit
+(or `python3 -m pre_commit run --all-files` when `core.hooksPath` blocks install).
 
 **B. Full-scale training run (the real goal)**
 Everything is proven at smoke scale. The real run: `lmfao augment` over all 45
