@@ -8,6 +8,29 @@ at a [LeRobot](https://github.com/huggingface/lerobot) v3 dataset (local folder 
 a Hugging Face link) and it turns each recorded episode into many varied training
 clips, written back out as a ready-to-train LeRobot dataset.
 
+> ## ⚠️ SECURITY — READ BEFORE YOU COMMIT (humans and AI agents)
+>
+> **This is a PUBLIC GitHub repo.** A real personal SSH private key was once
+> committed here via `git add -A` (see §3). Whoever works on this repo next — a
+> person or an AI agent in Cursor/Claude/etc. — MUST follow these rules:
+>
+> 1. **NEVER `git add -A`, `git add .`, or `git add -u`.** Stage explicit paths
+>    only: `git add src/lmfao/... tests/... docs/STATUS.md`. Run `git status` and
+>    read it before every commit.
+> 2. **NEVER write secrets, keys, tokens, `.env`, or credentials inside the repo
+>    tree** — not even temporarily. Use a scratch dir OUTSIDE the repo (e.g. `/tmp`).
+>    Never run `ssh-keygen -f <path-in-repo>`.
+> 3. **Before any commit, run the secret scan** (a `gitleaks` hook is wired up):
+>    `git diff --cached` should contain zero key material; if gitleaks flags
+>    anything, STOP.
+> 4. **Never paste API keys / tokens into the chat or terminal transcript.** If a
+>    credential is needed, have the human export it as an env var themselves.
+> 5. **If a secret ever reaches a commit:** treat it as compromised, purge it from
+>    history, force-push, AND have the owner rotate/revoke it (GitHub caches
+>    unreachable blobs; public repos get scraped and forked within minutes).
+>
+> Full incident writeup and the current guardrails are in §3.
+
 ---
 
 ## 1. Current state of the art (what works, verified)
@@ -117,21 +140,40 @@ guards (`*.pub`, `*.pem`, `*_key`, `id_ed25519*`, `id_rsa*`, `pod_key*`,
 was never in the repo. The user **revoked the RunPod API key** and **rotated the
 SSH key** (old backed up at `~/.ssh/id_ed25519.OLD-COMPROMISED`).
 
-**Hard rules going forward (non-negotiable):**
-- **Never `git add -A` / `git add .`** in this repo. Stage explicit paths
-  (`git add src/ tests/ docs/`) and review `git status` before every commit.
-- Never generate keys, tokens, or write secrets **inside** the repo working tree —
-  use the session scratchpad (outside the repo).
-- Treat any secret that touched a public repo as **compromised**: rotate/revoke it
-  even after history rewrite (GitHub caches unreachable blobs; scrapers/forks exist).
+**Hard rules going forward (non-negotiable)** — see the banner at the top of this
+doc for the full list. In short: no `git add -A`/`.`/`-u` (explicit paths only,
+review `git status` first); never write secrets inside the repo tree; run the
+gitleaks scan before committing; never paste keys into the transcript; treat any
+leaked secret as compromised and rotate/revoke it.
+
+**Current guardrails in place:**
+- `.gitignore` blocks key material: `*.pub`, `*.pem`, `*_key`, `id_ed25519*`,
+  `id_rsa*`, `pod_key*`, `.runpod_key`.
+- A **gitleaks** secret-scanner runs on commit ("no leaks found" required to pass).
+  Verify it's active with `git config --get core.hooksPath` / check for a
+  `pre-commit` hook; if missing on a fresh clone, re-enable it before committing.
+
+**Verified clean state (2026-08-04):** key purged from all history + force-pushed;
+every tracked file scanned — no other secrets; RunPod API key was never in the repo
+and has been revoked; SSH key rotated (old at `~/.ssh/id_ed25519.OLD-COMPROMISED`,
+delete after finishing the swap on any servers).
 
 ---
 
 ## 4. Next steps (prioritized)
 
-**A. Finish the security rotation (user task, in progress)**
-Add the new SSH public key to any remote servers' `authorized_keys`, test, remove
-the old key everywhere, then delete `~/.ssh/id_ed25519.OLD-COMPROMISED{,.pub}`.
+**A. Security — finish and verify (highest priority)**
+- Finish the SSH rotation: add the new public key to any remote servers'
+  `authorized_keys`, test login, remove the old key everywhere, then delete
+  `~/.ssh/id_ed25519.OLD-COMPROMISED{,.pub}`.
+- Confirm the gitleaks pre-commit hook is active on this clone (and set it up on any
+  new clone before the first commit).
+- Audit the OTHER repos under `~/Desktop/LocalProjects` for the same mistake — the
+  stray key file suggests `git add -A` may have leaked elsewhere too. Quick check
+  per repo: `git ls-files | grep -iE 'key|\.pub$|\.pem$|\.env'` and
+  `git log --all --diff-filter=A --name-only | grep -iE 'key|\.pub$'`.
+- Consider enabling GitHub **push protection / secret scanning** on the repo
+  (Settings → Code security) so GitHub itself blocks future secret pushes.
 
 **B. Full-scale training run (the real goal)**
 Everything is proven at smoke scale. The real run: `lmfao augment` over all 45
@@ -164,6 +206,3 @@ multi-week Phase 0-1 in `v2_mini_world_generator_plan.md`. Genuine research risk
   not implemented).
 - `docs/adding_features.md` — contributor guide for new augmenters.
 - `docs/library-usage-vision.md` — the (partly superseded) Python-library vision.
-
-*(This file previously held the noise-augmentation changelog; that content remains
-in git history. It is now the project's running status doc.)*
