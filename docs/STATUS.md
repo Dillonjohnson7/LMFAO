@@ -85,9 +85,11 @@ lighting, streaming writer + `--resume`, and the browser LeRobot-folder ingest +
 job.json export in `web/`.
 
 ### Canonical data
-The **only** dataset for this project is HF `Dillonjohnson/pick_place_v2` (SO101 /
-`so_follower`, wrist camera; the front camera isn't downloaded). Never the old
-Downloads teleop folder.
+- **Dev / smoke dataset:** HF `Dillonjohnson/pick_place_v2` (SO101 / `so_follower`,
+  wrist camera) — used to build and prove LMFAO's LeRobot export + ACT load.
+- **Eval dataset:** a **newly recorded** session (see `scripts/record_demos.sh` /
+  `docs/TRAINING_RUN.md`). Do not treat `pick_place_v2` as the comparative-eval
+  training set. Never the old Downloads teleop folder.
 
 ---
 
@@ -179,12 +181,22 @@ other-repo audit, and GitHub secret scanning / push protection. Remaining hygien
 on every fresh clone, run `python3 -m pre_commit install` before the first commit
 (or `python3 -m pre_commit run --all-files` when `core.hooksPath` blocks install).
 
-**B. Full-scale training run (the real goal)**
-Everything is proven at smoke scale. The real run: `lmfao augment` over all 45
-`pick_place_v2` episodes at full length with N variants (drop the `--limit`/
-`--max-frames` caps), then train ACT for real steps on a pod. Use
-`COPYFILE_DISABLE=1 tar` or `huggingface-cli upload` for transfer (avoid the
-AppleDouble trap). A full augment is ~30-60 min locally; reuse the pod recipe (§2).
+**B. Comparative eval run (the real goal)** — scaffolding landed
+Everything is proven at smoke scale. The next experiment is **not** reusing
+`pick_place_v2` — it is:
+
+1. **Recollect** fresh SO101 demos (`scripts/record_demos.sh` on the robot box)
+2. **Augment** with the CLI into matched buckets (stock / lighting / noise /
+   occlusion / spatial / full) via `scripts/augment_eval_buckets.sh`
+3. **Train** one ACT policy per bucket with identical hparams
+   (`scripts/train_eval_buckets.sh` on a CUDA pod)
+4. **Compare** physical rollout success under held-out lighting / framing /
+   occlusion — that is how we tell whether the CLI helps
+
+Checklist + table: `docs/TRAINING_RUN.md`. Bucket configs:
+`configs/training/buckets/*.json`. Transfer with `COPYFILE_DISABLE=1 tar` or
+`huggingface-cli upload` (avoid AppleDouble). This cloud agent has **no robot
+and no GPU** — recording is on the SO101 workstation; training on RunPod.
 
 **C. `lmfao generate` quality (experimental → trainable)**
 The novel-view path produces 96×54, blurry, assumed-pose frames. Making it
@@ -206,6 +218,7 @@ multi-week Phase 0-1 in `v2_mini_world_generator_plan.md`. Genuine research risk
 
 ## Related docs
 - `README.md` — user-facing CLI quickstart.
+- `docs/TRAINING_RUN.md` — full-scale augment → ACT checklist and scripts.
 - `docs/v2_mini_world_generator_plan.md` — the GENERATE/splat roadmap (design doc,
   not implemented).
 - `docs/adding_features.md` — contributor guide for new augmenters.
