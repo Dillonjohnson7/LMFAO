@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Train a single ACT policy on one dataset (used by train_eval_arms.sh arms,
-# or for ad-hoc one-offs). Prefer scripts/train_eval_arms.sh for the CLI
-# evaluation experiment.
+# Train a single ACT policy on one dataset (used by train_eval_buckets.sh
+# buckets, or for ad-hoc one-offs). Prefer scripts/train_eval_buckets.sh for
+# the CLI evaluation experiment.
 set -euo pipefail
 
 DATASET_ROOT="${DATASET_ROOT:?set DATASET_ROOT}"

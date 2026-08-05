@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# Train one ACT policy per evaluation arm (stock + each LMFAO augmentation).
+# Train one ACT policy per evaluation bucket (stock + each LMFAO augmentation).
 #
-# Same hyperparameters across arms so the comparison is about the data, not the
-# trainer knobs. Requires CUDA + lerobot-train (see docs/STATUS.md §2).
+# Same hyperparameters across buckets so the comparison is about the data, not
+# the trainer knobs. Requires CUDA + lerobot-train (see docs/STATUS.md §2).
 #
 # Usage:
-#   OUT_ROOT=/data/eval_arms ./scripts/train_eval_arms.sh
-#   ARMS="stock lighting noise" STEPS=50000 ./scripts/train_eval_arms.sh
+#   OUT_ROOT=/data/eval_buckets ./scripts/train_eval_buckets.sh
+#   BUCKETS="stock lighting noise" STEPS=50000 ./scripts/train_eval_buckets.sh
 set -euo pipefail
 
-OUT_ROOT="${OUT_ROOT:?set OUT_ROOT to the directory produced by augment_eval_arms.sh}"
-RUNS_ROOT="${RUNS_ROOT:-${LMFAO_DATA_ROOT:-/workspace/data}/runs/eval_arms}"
-ARMS="${ARMS:-stock lighting noise occlusion spatial full}"
+OUT_ROOT="${OUT_ROOT:?set OUT_ROOT to the directory produced by augment_eval_buckets.sh}"
+RUNS_ROOT="${RUNS_ROOT:-${LMFAO_DATA_ROOT:-/workspace/data}/runs/eval_buckets}"
+BUCKETS="${BUCKETS:-stock lighting noise occlusion spatial full}"
 POLICY_DEVICE="${POLICY_DEVICE:-cuda}"
 STEPS="${STEPS:-100000}"
 BATCH_SIZE="${BATCH_SIZE:-8}"
@@ -32,18 +32,18 @@ fi
 
 mkdir -p "$RUNS_ROOT"
 
-for arm in $ARMS; do
-  ds="${OUT_ROOT}/${arm}"
-  run="${RUNS_ROOT}/${arm}"
+for bucket in $BUCKETS; do
+  ds="${OUT_ROOT}/${bucket}"
+  run="${RUNS_ROOT}/${bucket}"
   if [[ ! -d "$ds/meta" ]]; then
-    echo "missing arm dataset: ${ds} (run scripts/augment_eval_arms.sh first)" >&2
+    echo "missing bucket dataset: ${ds} (run scripts/augment_eval_buckets.sh first)" >&2
     exit 1
   fi
   mkdir -p "$run"
   echo
-  echo "=== train arm=${arm} steps=${STEPS} ==="
+  echo "=== train bucket=${bucket} steps=${STEPS} ==="
   "$LEROBOT_BIN" \
-    --dataset.repo_id="${HF_USER}/lmfao_eval_${arm}" \
+    --dataset.repo_id="${HF_USER}/lmfao_eval_${bucket}" \
     --dataset.root="$ds" \
     --policy.type=act \
     --policy.device="$POLICY_DEVICE" \
@@ -57,5 +57,5 @@ for arm in $ARMS; do
 done
 
 echo
-echo "Checkpoints under ${RUNS_ROOT}/{arm}"
+echo "Checkpoints under ${RUNS_ROOT}/{bucket}"
 echo "Compare with physical rollouts — see docs/TRAINING_RUN.md §Compare"
