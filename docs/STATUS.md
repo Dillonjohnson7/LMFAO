@@ -182,15 +182,15 @@ Everything is proven at smoke scale. The next experiment is **not** reusing
 `pick_place_v2` — it is:
 
 1. **Recollect** fresh SO101 demos (`scripts/record_demos.sh` on the robot box)
-2. **Augment** with the CLI into matched arms (stock / lighting / noise /
-   occlusion / spatial / full) via `scripts/augment_eval_arms.sh`
-3. **Train** one ACT policy per arm with identical hparams
-   (`scripts/train_eval_arms.sh` on a CUDA pod)
+2. **Augment** with the CLI into matched buckets (stock / lighting / noise /
+   occlusion / spatial / full) via `scripts/augment_eval_buckets.sh`
+3. **Train** one ACT policy per bucket with identical hparams
+   (`scripts/train_eval_buckets.sh` on a CUDA pod)
 4. **Compare** physical rollout success under held-out lighting / framing /
    occlusion — that is how we tell whether the CLI helps
 
-Checklist + table: `docs/TRAINING_RUN.md`. Arm configs:
-`configs/training/arms/*.json`. Transfer with `COPYFILE_DISABLE=1 tar` or
+Checklist + table: `docs/TRAINING_RUN.md`. Bucket configs:
+`configs/training/buckets/*.json`. Transfer with `COPYFILE_DISABLE=1 tar` or
 `huggingface-cli upload` (avoid AppleDouble). This cloud agent has **no robot
 and no GPU** — recording is on the SO101 workstation; training on RunPod.
 
