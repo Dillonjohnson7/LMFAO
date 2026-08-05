@@ -179,5 +179,7 @@ and checklist.
 ## Development
 
 ```bash
+pip install -e ".[dev,lerobot]"
+pip install pre-commit && pre-commit install   # gitleaks on every commit
 pytest
 ```
