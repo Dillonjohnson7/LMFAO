@@ -1,101 +1,169 @@
-# Changes: noise augmentation
+# LMFAO — State of the Art & Next Steps
 
-## What landed
+Living status doc. Last updated 2026-08-04. This is the single source of truth for
+where the project is, what's proven, what we learned, and what to do next.
 
-Two augmenters, `noise.gaussian` and `noise.uniform`, plus a self-contained
-accelerator that draws the random numbers on a GPU when one is present.
+LMFAO is a **command-line tool for augmenting robot-learning datasets**: point it
+at a [LeRobot](https://github.com/huggingface/lerobot) v3 dataset (local folder or
+a Hugging Face link) and it turns each recorded episode into many varied training
+clips, written back out as a ready-to-train LeRobot dataset.
 
-```text
-src/lmfao/features/noise/
-    __init__.py       exports both augmenters
-    gaussian.py       noise.gaussian
-    uniform.py        noise.uniform
-    accelerator.py    all device-specific code
+---
+
+## 1. Current state of the art (what works, verified)
+
+### The CLI (`lmfao`)
+Four entry points, all native to the LeRobot v3 on-disk format:
+
+| command | status | what it does |
+| --- | --- | --- |
+| `lmfao` (no args) | ✅ working | interactive wizard: paste an HF link, pick effects, run |
+| `lmfao augment` | ✅ **production-ready** | ADJUST pipeline at native resolution — the trainable path |
+| `lmfao inspect` | ✅ working | summarize any LeRobot dataset without decoding video |
+| `lmfao generate` | ⚠️ experimental | synthesize novel camera views (low-res reference renderer) |
+
+`augment` is the mature command: full 6-effect pipeline (lighting ×3, noise ×2,
+occlusion, spatial crop), deterministic **magnitude sweeps** (e.g. brightness
+±5/±10/±15% with a projected video count), `--variants` N seasoned copies,
+`--include-original`, a **streaming one-episode-per-file writer** (bounded memory),
+and crash-safe **`--resume`** (checkpoint per source episode; verified bit-identical
+to a clean run). Speed: LUT lighting fast path (~32× faster brightness, memory
+19 GB → 2 GB) + `veryfast` x264 preset.
+
+### LeRobot training compatibility — CONFIRMED
+A full RunPod smoke test (RTX A4500) **loaded an augmented `pick_place_v2` in
+lerobot 0.6.2 and trained an ACT policy on GPU**, loss decreasing 74 → 22 over 10
+steps. Getting there required matching the real v3.0 schema exactly (all four now
+emitted by both writers):
+1. `meta/stats.json` + per-episode `stats/<feat>/<key>` columns (LeRobot normalizes
+   from these).
+2. `tasks.parquet` with pandas index metadata (task string as the DataFrame index).
+3. `info.json` declares **every** data column as a feature — state, action, video,
+   **and** timestamp/frame_index/episode_index/index/task_index — plus `splits` and
+   the size fields.
+4. state/action stored as `fixed_size_list<float32>[dim]`, not variable `list<>`.
+
+### Hardening & quality
+- **~76 bugs fixed** across three adversarial multi-agent sweeps (data-loss paths,
+  silent corruption, format bugs, crashes → clean errors).
+- **209 tests, ruff clean.** Reader/writer round-trips, resume correctness,
+  streaming, LUT bit-identity, wizard flows, CLI error paths.
+
+### Branch reconciliation (done)
+`feature/lerobot-export` and `feature/lerobot-web-export` are **retired** (deleted
+local + origin, archived as tags `archive/lerobot-export`,
+`archive/lerobot-web-export`). Their unique value was ported onto main: LUT
+lighting, streaming writer + `--resume`, and the browser LeRobot-folder ingest +
+job.json export in `web/`.
+
+### Canonical data
+The **only** dataset for this project is HF `Dillonjohnson/pick_place_v2` (SO101 /
+`so_follower`, wrist camera; the front camera isn't downloaded). Never the old
+Downloads teleop folder.
+
+---
+
+## 2. Key technical learnings
+
+**LeRobot v3.0 dataset format (the exact requirements):** see §1's four points.
+LeRobot derives the parquet schema from `info.json` features and passes it to
+`datasets.Dataset.from_parquet`, so an undeclared column or a variable-length list
+fails the load. Verified against the real `pick_place_v2` (the ground-truth dataset
+that loads) and lerobot 0.6.1/0.6.2 loader source.
+
+**Training environment recipe (RunPod, reproduces the SO101 `setup.sh`):**
+lerobot 0.6.x is **git-only and needs Python 3.12** (PyPI `lerobot` is 0.4.4 and
+can't read v3.0). Fast path on a PyTorch pod image:
 ```
+uv venv --python 3.12 /workspace/v312
+uv pip install --python /workspace/v312 \
+  "git+https://github.com/huggingface/lerobot.git" datasets "av>=15.0.0,<16.0.0" torchcodec accelerate
+```
+Train (ACT smoke):
+```
+lerobot-train --dataset.repo_id=X --dataset.root=/path \
+  --policy.type=act --policy.device=cuda --policy.push_to_hub=false \
+  --steps=N --batch_size=2 --save_checkpoint=false --wandb.enable=false
+```
+`torchcodec` fails to load `libnvrtc` on the plain image and falls back to `pyav`
+(harmless). `av` MUST be pinned to 15.x — 18.0 removed `av.option` and breaks lerobot.
 
-The layout follows the occlusion package: one module per feature, shared helpers
-beside them. Adding a third noise type means naming a distribution in a new
-module, not writing GPU code.
+**macOS `tar` AppleDouble gotcha:** shipping a dataset to a Linux pod via macOS
+`tar` creates `._*.parquet` sidecar files that lerobot's glob reads as bogus
+parquets ("magic bytes not found in footer"). This masqueraded as a format bug for
+a while. Fix: `COPYFILE_DISABLE=1 tar ...`, or `huggingface-cli upload`, or
+`find <dir> -name '._*' -delete` on the pod.
 
-## Why the accelerator lives inside the feature
+**Other environment facts:** pyarrow `read_table` deadlocks its thread pool on
+pyarrow 25 / CPython 3.14 → the reader uses `use_threads=False`. `torch` cannot be
+installed into the LMFAO venv — it deadlocks `import av` (so GPU-accelerated noise
+stays out of the dataset-touching env). The repo lives under `~/Desktop` which is
+**iCloud-synced**; writing datasets triggers sync storms that spike system load and
+make commands time out — write large outputs to a non-synced dir like
+`~/lmfao_augmented/`.
 
-Generating the random numbers, not the arithmetic that follows, is what makes
-noise expensive. That makes it the part worth accelerating, and it is specific
-to noise, so it sits in the noise package rather than in LMFAO core.
+---
 
-Nothing outside `accelerator.py` imports torch or knows a device exists. Videos
-go in and come out as NumPy arrays of the same shape and dtype, so `base.py`,
-`pipeline.py`, and `registry.py` are untouched and torch stays an optional
-dependency.
+## 3. Security learnings (a real incident — do not repeat)
 
-## Measured
+**What happened:** a real personal SSH private key sitting in the repo root (a
+garbled escape-character filename) was committed to the **public** GitHub repo via
+`git add -A`, which blindly stages every untracked file.
 
-Augmentation alone, 720p, Apple M3 Max, best of five runs:
+**Remediation done:** removed from HEAD, purged from all git history
+(`filter-branch` + dropped backup refs + gc), force-pushed; added `.gitignore`
+guards (`*.pub`, `*.pem`, `*_key`, `id_ed25519*`, `id_rsa*`, `pod_key*`,
+`.runpod_key`); scanned every tracked file (no other secrets); the RunPod API key
+was never in the repo. The user **revoked the RunPod API key** and **rotated the
+SSH key** (old backed up at `~/.ssh/id_ed25519.OLD-COMPROMISED`).
 
-| batch | NumPy | accelerated | speedup |
-| --- | --- | --- | --- |
-| 8 frames (22 MB) | 152.8 ms | 5.4 ms | 28x |
-| 32 frames (88 MB) | 621.3 ms | 19.9 ms | 31x |
-| 64 frames (177 MB) | 1289.6 ms | 39.1 ms | 33x |
+**Hard rules going forward (non-negotiable):**
+- **Never `git add -A` / `git add .`** in this repo. Stage explicit paths
+  (`git add src/ tests/ docs/`) and review `git status` before every commit.
+- Never generate keys, tokens, or write secrets **inside** the repo working tree —
+  use the session scratchpad (outside the repo).
+- Treat any secret that touched a public repo as **compromised**: rotate/revoke it
+  even after history rewrite (GitHub caches unreachable blobs; scrapers/forks exist).
 
-Those accelerated timings include uploading the clip and downloading the result
-on every call. Holding the video on the device between calls measures 35-43x, so
-the round trip costs about 20% of the win. That was the deciding number: it is
-not worth leaking device handles through the public API to recover it.
+---
 
-End to end through `examples/augment_folder.py` on 11 real 720p clips, the CPU
-path took 2068 s. The accelerated path processes a clip in roughly 40 s against
-roughly 188 s, about 5x. The gap between 30x and 5x is decode and encode, which
-now dominate: the augmentation is no longer the bottleneck.
+## 4. Next steps (prioritized)
 
-## Decisions worth knowing
+**A. Finish the security rotation (user task, in progress)**
+Add the new SSH public key to any remote servers' `authorized_keys`, test, remove
+the old key everywhere, then delete `~/.ssh/id_ed25519.OLD-COMPROMISED{,.pub}`.
 
-**Randomness still flows from the pipeline's rng.** The contract says features
-use the provided `rng` rather than making their own. The device generator is
-seeded from it, so a seeded run stays reproducible. The CPU and the device draw
-different values for the same seed because they use different generators; each
-is reproducible against itself, and both were checked to produce the same
-distribution (Gaussian std 12.40 vs 12.37 at `sigma=0.05`, against 12.75
-expected).
+**B. Full-scale training run (the real goal)**
+Everything is proven at smoke scale. The real run: `lmfao augment` over all 45
+`pick_place_v2` episodes at full length with N variants (drop the `--limit`/
+`--max-frames` caps), then train ACT for real steps on a pod. Use
+`COPYFILE_DISABLE=1 tar` or `huggingface-cli upload` for transfer (avoid the
+AppleDouble trap). A full augment is ~30-60 min locally; reuse the pod recipe (§2).
 
-**Rounding before the dtype cast.** `preserve_dtype` casts, and casting
-truncates toward zero, which biases every frame darker by about half a level.
-The noise modules round first. This is kept local rather than changed in
-`base.py`, since lighting and occlusion depend on the shared version.
+**C. `lmfao generate` quality (experimental → trainable)**
+The novel-view path produces 96×54, blurry, assumed-pose frames. Making it
+trainable needs the real Gaussian-splat backend + FK-derived camera poses — the
+multi-week Phase 0-1 in `v2_mini_world_generator_plan.md`. Genuine research risk
+(is task-directed webcam footage good enough for a usable splat?).
 
-**Unsupported dtypes fall back silently, bad devices fail loudly.** `float64`
-cannot go to Metal, so `device="auto"` quietly uses the CPU for it. Asking for
-`device="cuda"` on a machine without CUDA raises, because silently running 30x
-slower is worse than an error.
+**D. Nice-to-haves**
+- Carry the source dataset's per-feature names (joint names) through `augment` so
+  the output `info.json` is fully faithful (currently `names: null`).
+- Port the archived export branch's `--encoder`/`--encode-bitrate` hardware-encode
+  flags (GPU encoding via `h264_videotoolbox`) — preserved in
+  `archive/lerobot-export`.
+- Move the repo off `~/Desktop` to stop the iCloud sync storms.
+- Expose `--resume` (and a `--dry-run` output-count preview) in the wizard, not just
+  the flag CLI.
 
-**Strength is a fraction of the dynamic range.** `sigma=0.05` means the same
-visible amount of noise on uint8 and float video, so a config ports between
-datasets without retuning.
+---
 
-## Verified
+## Related docs
+- `README.md` — user-facing CLI quickstart.
+- `docs/v2_mini_world_generator_plan.md` — the GENERATE/splat roadmap (design doc,
+  not implemented).
+- `docs/adding_features.md` — contributor guide for new augmenters.
+- `docs/library-usage-vision.md` — the (partly superseded) Python-library vision.
 
-- 34 tests pass; `ruff check src tests` is clean
-- shape, dtype, and metadata preserved on both paths, across uint8, int16,
-  float32, and float64
-- input arrays are never mutated
-- no wraparound when clipping at 0 and 255
-- noise is resampled per frame, not held constant across a clip
-- seeded pipeline runs reproduce exactly, composed with `lighting.brightness`
-
-## Also in this change
-
-`examples/augment_folder.py` batch-augments a folder through any registered
-feature, so lighting, spatial, and occlusion work in it without edits.
-
-The package layout matches the lighting, occlusion, and spatial packages that
-landed while this was being written: a package per category, one module per
-feature, shared helpers beside them. `accelerator.py` fills the role their
-`utils.py` does.
-
-## Not done
-
-- CUDA is written but untested; no NVIDIA hardware here. The torch path covers
-  both, so it should work, but it needs a real run before anyone trusts it.
-- The `feature/gpu-kernel-skeleton` branch proposes a shared `backends/` layer.
-  If that lands, this accelerator should move under it rather than staying in
-  the feature package.
+*(This file previously held the noise-augmentation changelog; that content remains
+in git history. It is now the project's running status doc.)*
