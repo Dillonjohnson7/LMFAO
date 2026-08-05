@@ -179,5 +179,13 @@ and checklist.
 ## Development
 
 ```bash
+pip install -e ".[dev,lerobot]"
+pip install pre-commit
+python3 -m pre_commit install   # gitleaks on every commit (python3 -m avoids PATH issues)
 pytest
 ```
+
+If `pre-commit install` refuses because `core.hooksPath` is set (Cursor cloud
+agents do this), leave that alone and either scan on demand with
+`python3 -m pre_commit run --all-files` or rely on the CI Secret scan job — do
+not unset the agent hooks path.
