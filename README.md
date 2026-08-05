@@ -181,7 +181,7 @@ and checklist.
 ```bash
 pip install -e ".[dev,lerobot]"
 pip install pre-commit
-python3 -m pre_commit install   # gitleaks on every commit (use python -m so PATH is irrelevant)
+python3 -m pre_commit install   # gitleaks on every commit (python3 -m avoids PATH issues)
 pytest
 ```
 
