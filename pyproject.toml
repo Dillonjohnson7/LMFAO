@@ -26,6 +26,7 @@ dev = [
 lerobot = [
     "pyarrow>=14",
     "av>=11",
+    "huggingface_hub>=0.23",  # wizard / scripts/download_demos.sh
 ]
 # The miniworld generator ships a complete numpy-only reference backend, so the
 # core install needs nothing extra to run it. This optional extra pulls the

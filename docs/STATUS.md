@@ -1,6 +1,6 @@
 # LMFAO — State of the Art & Next Steps
 
-Living status doc. Last updated 2026-08-04. This is the single source of truth for
+Living status doc. Last updated 2026-08-05. This is the single source of truth for
 where the project is, what's proven, what we learned, and what to do next.
 
 LMFAO is a **command-line tool for augmenting robot-learning datasets**: point it
@@ -175,12 +175,20 @@ delete after finishing the swap on any servers).
 - Consider enabling GitHub **push protection / secret scanning** on the repo
   (Settings → Code security) so GitHub itself blocks future secret pushes.
 
-**B. Full-scale training run (the real goal)**
-Everything is proven at smoke scale. The real run: `lmfao augment` over all 45
-`pick_place_v2` episodes at full length with N variants (drop the `--limit`/
-`--max-frames` caps), then train ACT for real steps on a pod. Use
-`COPYFILE_DISABLE=1 tar` or `huggingface-cli upload` for transfer (avoid the
-AppleDouble trap). A full augment is ~30-60 min locally; reuse the pod recipe (§2).
+**B. Full-scale training run (the real goal)** — kickoff scaffolding landed
+Everything is proven at smoke scale. Reproducible path is now in-repo:
+
+- Checklist: `docs/TRAINING_RUN.md`
+- Pipeline config: `configs/training/pick_place_v2_pipeline.json`
+- Scripts: `scripts/download_demos.sh` → `scripts/augment_full.sh` →
+  `scripts/train_act.sh` (CUDA pod)
+
+The real run: `lmfao augment` over all 45 `pick_place_v2` episodes at full
+length with N variants (drop the `--limit`/`--max-frames` caps), then train ACT
+for real steps on a pod. Use `COPYFILE_DISABLE=1 tar` or `huggingface-cli upload`
+for transfer (avoid the AppleDouble trap). A full augment is ~30-60 min locally;
+reuse the pod recipe (§2). This cloud agent host has **no GPU** — augment here,
+train on RunPod.
 
 **C. `lmfao generate` quality (experimental → trainable)**
 The novel-view path produces 96×54, blurry, assumed-pose frames. Making it
@@ -202,6 +210,7 @@ multi-week Phase 0-1 in `v2_mini_world_generator_plan.md`. Genuine research risk
 
 ## Related docs
 - `README.md` — user-facing CLI quickstart.
+- `docs/TRAINING_RUN.md` — full-scale augment → ACT checklist and scripts.
 - `docs/v2_mini_world_generator_plan.md` — the GENERATE/splat roadmap (design doc,
   not implemented).
 - `docs/adding_features.md` — contributor guide for new augmenters.
