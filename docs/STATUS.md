@@ -179,12 +179,20 @@ other-repo audit, and GitHub secret scanning / push protection. Remaining hygien
 on every fresh clone, run `python3 -m pre_commit install` before the first commit
 (or `python3 -m pre_commit run --all-files` when `core.hooksPath` blocks install).
 
-**B. Full-scale training run (the real goal)**
-Everything is proven at smoke scale. The real run: `lmfao augment` over all 45
-`pick_place_v2` episodes at full length with N variants (drop the `--limit`/
-`--max-frames` caps), then train ACT for real steps on a pod. Use
-`COPYFILE_DISABLE=1 tar` or `huggingface-cli upload` for transfer (avoid the
-AppleDouble trap). A full augment is ~30-60 min locally; reuse the pod recipe (§2).
+**B. Full-scale training run (the real goal)** — kickoff scaffolding landed
+Everything is proven at smoke scale. Reproducible path is now in-repo:
+
+- Checklist: `docs/TRAINING_RUN.md`
+- Pipeline config: `configs/training/pick_place_v2_pipeline.json`
+- Scripts: `scripts/download_demos.sh` → `scripts/augment_full.sh` →
+  `scripts/train_act.sh` (CUDA pod)
+
+The real run: `lmfao augment` over all 45 `pick_place_v2` episodes at full
+length with N variants (drop the `--limit`/`--max-frames` caps), then train ACT
+for real steps on a pod. Use `COPYFILE_DISABLE=1 tar` or `huggingface-cli upload`
+for transfer (avoid the AppleDouble trap). A full augment is ~30-60 min locally;
+reuse the pod recipe (§2). This cloud agent host has **no GPU** — augment here,
+train on RunPod.
 
 **C. `lmfao generate` quality (experimental → trainable)**
 The novel-view path produces 96×54, blurry, assumed-pose frames. Making it
@@ -206,6 +214,7 @@ multi-week Phase 0-1 in `v2_mini_world_generator_plan.md`. Genuine research risk
 
 ## Related docs
 - `README.md` — user-facing CLI quickstart.
+- `docs/TRAINING_RUN.md` — full-scale augment → ACT checklist and scripts.
 - `docs/v2_mini_world_generator_plan.md` — the GENERATE/splat roadmap (design doc,
   not implemented).
 - `docs/adding_features.md` — contributor guide for new augmenters.
