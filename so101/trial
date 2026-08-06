@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # One scored trial, end to end: start pose -> gates -> rollout.
 #
-#   ./so101/trial                  # 20 s, stock, rerun off
-#   ./so101/trial 30               # 30 s
+#   ./so101/trial                  # 135 s, stock, rerun off
+#   ./so101/trial 60               # shorter
 #   POLICY=lighting ./so101/trial  # another bucket
 #   DISPLAY_DATA=1 ./so101/trial   # watch it (JPEG); =raw for uncompressed
 #   SKIP_POSE=1 ./so101/trial      # rollout without re-homing the arm
@@ -16,7 +16,11 @@
 set -euo pipefail
 
 SO101_DIR="$(cd "$(dirname "$0")" && pwd)"
-DUR="${1:-20}"
+# 135 s is v2's scored-run default, not a guess: the full sequence (reach,
+# descend, close, lift, carry, release) took ~33 s on the run that completed
+# it, and the close is retried several times before it seizes. A 20 s cap
+# ends the episode mid-attempt and scores a timeout as a failure.
+DUR="${1:-135}"
 POLICY_NAME="${POLICY:-stock}"
 
 B=$'\033[1m'; G=$'\033[32m'; R=$'\033[31m'; Y=$'\033[33m'; X=$'\033[0m'
