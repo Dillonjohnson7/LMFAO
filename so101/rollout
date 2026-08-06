@@ -5,6 +5,13 @@
 #   ./so101/rollout            # 5 s smoke, stock policy
 #   ./so101/rollout 20         # 20 s
 #   POLICY=lighting ./so101/rollout 20
+#   DISPLAY_DATA=1 ./so101/rollout 20    # watch it live in rerun
+#
+# DISPLAY_DATA defaults OFF. Rerun streams both raw camera frames (~3.6 MB)
+# per control step -- ~108 MB/s -- which overruns its 1 GiB buffer in ~11 s
+# and drags the control loop well below 30 Hz. Measured on this NUC: cameras
+# sustain 30.0 Hz and ACT inference 161 Hz, so rerun is the only thing that
+# breaks cadence. Turn it on to watch a run, off to measure one.
 #
 # Single-token launcher: this terminal splits long multi-line pastes
 # (so101/STATUS.md), so the whole lerobot-rollout invocation lives here.
@@ -19,6 +26,18 @@ set -euo pipefail
 
 SO101_DIR="$(cd "$(dirname "$0")" && pwd)"
 LMFAO_DIR="$(cd "$SO101_DIR/.." && pwd)"
+
+# The serial port is dialout-only. A shell opened before the user was added to
+# that group does not carry it, so re-exec once under sg rather than making the
+# operator do it by hand. The guard stops this from recursing.
+# (-w reflects this process's real credentials; `id -nG $USER` would not, as it
+# reads the group database rather than the shell's own group set.)
+if [[ -e "${FOLLOWER_PORT:-/dev/so101_follower}" && ! -w "${FOLLOWER_PORT:-/dev/so101_follower}" \
+      && -z "${SO101_SG_REEXEC:-}" ]] && getent group dialout | grep -qw "$(whoami)"; then
+  export SO101_SG_REEXEC=1
+  exec sg dialout -c "$(printf '%q ' "$0" "$@")"
+fi
+
 # shellcheck disable=SC1091
 source "$SO101_DIR/env.sh"
 
@@ -31,6 +50,8 @@ POLICY_PATH="${POLICY_PATH:-$LMFAO_DIR/policies/$POLICY_NAME}"
 TASK="${TASK:-pick the blue puck and place it in the brown box}"
 FPS="${FPS:-30}"
 PORT="${FOLLOWER_PORT:-/dev/so101_follower}"
+DISPLAY_DATA="${DISPLAY_DATA:-0}"
+[[ "$DISPLAY_DATA" == "1" || "$DISPLAY_DATA" == "true" ]] && DISPLAY_DATA=true || DISPLAY_DATA=false
 
 # --- pre-flight -------------------------------------------------------------
 [[ -f "$POLICY_PATH/model.safetensors" ]] || {
@@ -47,8 +68,8 @@ done
 
 [[ -e "$PORT" ]] || { echo "follower not found at $PORT — is it plugged in?" >&2; exit 1; }
 if [[ ! -r "$PORT" || ! -w "$PORT" ]]; then
-  echo "cannot access $PORT (dialout group not active in this shell)." >&2
-  echo "  fix: log out and back in, or re-run as:  sg dialout -c '$0 $*'" >&2
+  echo "cannot access $PORT — $USER is not in the dialout group." >&2
+  echo "  fix: sudo usermod -aG dialout $USER, then log out and back in" >&2
   exit 1
 fi
 
@@ -71,6 +92,7 @@ echo "policy   : $POLICY_NAME  ($POLICY_PATH)"
 echo "duration : ${DURATION}s @ ${FPS} fps"
 echo "cameras  : front=$FRONT (640x480)  wrist=$WRIST (1280x720)"
 echo "task     : $TASK"
+echo "rerun    : $DISPLAY_DATA$([[ "$DISPLAY_DATA" == "true" ]] && echo '  (costs cadence — off for scored trials)')"
 echo
 
 if [[ "$DRY" == "1" ]]; then
@@ -94,5 +116,5 @@ exec lerobot-rollout \
   --task="$TASK" \
   --fps="$FPS" \
   --duration="$DURATION" \
-  --display_data=true \
+  --display_data="$DISPLAY_DATA" \
   --return_to_initial_position=true
