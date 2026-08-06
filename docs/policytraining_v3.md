@@ -52,9 +52,17 @@ less docs/policytraining_v3.md
 Writing this file does not itself publish it. A separate explicit commit and
 push are required before `git pull` can retrieve it on the NUC.
 
-### 1.2 Copy the stock policy from RunPod to the NUC
+### 1.2 Copy the stock policy from RunPod or Hugging Face to the NUC
 
-On the NUC:
+Preferred durable source after extraction:
+
+```text
+Policy:  Dillonjohnson/pick_place_v3_act_stock
+Dataset: Dillonjohnson/pick_place_v3_stock
+```
+
+On the NUC, either download from Hugging Face after `huggingface-cli login`, or
+copy directly from the still-running stock pod:
 
 ```bash
 cd /home/multiply/LMFAO
@@ -734,18 +742,22 @@ versions can break APIs used by LeRobot.
 
 ## 12. Current run status snapshot
 
-Snapshot taken around 2026-08-06 16:07 America/New_York:
+Snapshot taken around 2026-08-06 18:24 America/New_York:
 
-- `stock`: complete at 100,000/100,000; final checkpoint validated and uploaded
-  to its private Hugging Face repository.
-- `spatial`: approximately 44,670/100,000 at 6.4 steps/second.
-- `occlusion`: approximately 39,058/100,000 at 6.2 steps/second.
-- `full`: approximately 17,399/100,000 at 6.3 steps/second.
-- `lighting`: approximately 2,854/100,000 at 1.9–2.0 steps/second. Low-GOP
-  encoding is complete, but this bucket remains video-decode/storage bound.
-- `noise`: low-GOP re-encoding complete at 720/720; dataset and CUDA validation
-  passed; fresh 100,000-step training launched and still initializing at this
-  snapshot.
+- `stock`: complete at 100,000/100,000. Final checkpoint, training summary, and
+  stock LeRobot dataset extracted to private Hugging Face repositories. Pod
+  `lmfao-act-stock` remains RUNNING with SSH access.
+- `spatial`: complete at 100,000/100,000. Final checkpoint present at
+  `checkpoints/last -> 100000` with full `pretrained_model` contents. Measured
+  finish throughput ~6.42 steps/second. Not yet uploaded to Hugging Face in
+  this snapshot.
+- `occlusion`: approximately 92,920/100,000 at ~4–6 steps/second.
+- `full`: approximately 73,130/100,000 at ~6.5 steps/second.
+- `lighting`: approximately 11,963/100,000 at ~2.2–2.4 steps/second.
+- `noise`: approximately 8,655/100,000 at ~1.1–1.3 steps/second.
+
+NUC physical rollouts are being handled separately by the operator and are not
+tracked as live status in this snapshot.
 
 These counters are a time-stamped snapshot, not a live status API. Read the
 current pod logs before making billing or shutdown decisions.
@@ -771,55 +783,132 @@ Logs and markers:
 /workspace/runs/eval_buckets/BUCKET.failed
 ```
 
-### 12.1 Hugging Face policy retention
+### 12.1 Hugging Face retention layout
 
-All six policies now have separate private Hugging Face model repositories
-grouped in one private v3 collection:
+All six policies have separate private Hugging Face model repositories grouped
+in one private v3 collection. Hugging Face does not support nested paths such
+as `Dillonjohnson/v3/stock`, so the collection is the folder-like grouping while
+each model remains directly usable as `--policy.path`.
 
 ```text
 Collection:
 https://huggingface.co/collections/Dillonjohnson/so101-pick-place-v3-act-policies-6a74e56a093a15c8acc55786
 
-Repositories:
+Policy repositories:
 Dillonjohnson/pick_place_v3_act_stock
 Dillonjohnson/pick_place_v3_act_lighting
 Dillonjohnson/pick_place_v3_act_noise
 Dillonjohnson/pick_place_v3_act_occlusion
 Dillonjohnson/pick_place_v3_act_spatial
 Dillonjohnson/pick_place_v3_act_full
+
+Stock dataset repository:
+Dillonjohnson/pick_place_v3_stock
 ```
 
-The repositories are separate because Hugging Face does not support a nested
-owner/repository path such as `Dillonjohnson/v3/stock`. A private collection is
-the folder-like grouping while keeping every repository directly usable as a
-LeRobot `--policy.path`.
+Deployable policy files live at each model repository root. Credentials,
+private keys, and intermediate incomplete checkpoints are not uploaded.
 
-The deployable files live at each repository root—not under an additional
-checkpoint subdirectory—so LeRobot can resolve the repository directly. The
-source datasets, logs, intermediate checkpoints, credentials, and private keys
-are not uploaded.
+### 12.2 Stock extraction completed from `lmfao-act-stock`
 
-Stock was uploaded and verified:
+The completed stock pod was inventoried and durable HF retention was verified.
+
+Pod facts:
 
 ```text
-repository:  Dillonjohnson/pick_place_v3_act_stock
-remote files: 9
+pod name:     lmfao-act-stock
+pod id:       fnre6t63nr42wq
+status:       RUNNING
+SSH:          209.170.80.132:14132
+done marker:  /workspace/runs/eval_buckets/stock.done
+last ckpt:    checkpoints/last -> 100000
+checkpoints:  020000, 040000, 060000, 080000, 100000
+```
+
+Final training metrics from the stock log:
+
+```text
+steps:                 100000
+batch size:            8
+seed:                  7
+num_workers:           4
+prefetch_factor:       4
+final loss:            0.053
+final l1_loss:         0.052
+final kld_loss:        0.000
+final grad norm:       4.167
+final lr:              1.0e-05
+final mem_gb:          8.42
+measured steps/sec:    ~6.49
+```
+
+Private policy repository contents:
+
+```text
+https://huggingface.co/Dillonjohnson/pick_place_v3_act_stock
+
+config.json
+model.safetensors
+policy_preprocessor.json
+policy_preprocessor_step_3_normalizer_processor.safetensors
+policy_postprocessor.json
+policy_postprocessor_step_0_unnormalizer_processor.safetensors
+train_config.json
+training_summary.json
+README.md
+```
+
+Verified model artifact:
+
+```text
 model size:   206,699,768 bytes
 model SHA-256:
 6718be1a97c1b644884d7038ee0d3cc611ae445a69cedd815506dc1e2ed68e0b
 ```
 
-A combined two-minute monitor now:
+Private stock dataset repository contents:
 
-1. watches all remaining training runs
-2. validates each final 100,000-step `pretrained_model`
-3. uploads only the complete deployable folder
-4. updates the model card from reserved to completed
-5. verifies required remote files, model size, and LFS SHA-256
-6. stops after all six repositories verify
+```text
+https://huggingface.co/datasets/Dillonjohnson/pick_place_v3_stock
 
-The Hugging Face token is passed to an upload process only in memory. It is not
-saved on the RunPod machines.
+meta/info.json
+meta/stats.json
+meta/tasks.parquet
+meta/episodes/chunk-000/file-000.parquet
+data/chunk-000/file-000.parquet
+videos/observation.images.front/chunk-000/file-000.mp4
+videos/observation.images.front/chunk-000/file-001.mp4
+videos/observation.images.wrist/chunk-000/file-000.mp4
+videos/observation.images.wrist/chunk-000/file-001.mp4
+README.md
+```
+
+Dataset facts extracted from the pod copy:
+
+```text
+episodes: 40
+frames:   26,021
+fps:      30
+bytes:    ~619,687,715 on pod before upload
+cameras:  front + wrist
+```
+
+NUC rollout can use either:
+
+```bash
+# local copy from the still-running stock pod
+scp -r -i "$HOME/.ssh/lmfao_runpod_transfer" -P 14132 \
+  root@209.170.80.132:/workspace/runs/eval_buckets/stock/checkpoints/last/pretrained_model \
+  /home/multiply/LMFAO/policies/stock
+
+# or Hugging Face after login on the NUC
+# --policy.path=Dillonjohnson/pick_place_v3_act_stock
+```
+
+Remaining policies should follow the same extraction pattern after they reach
+100,000 steps: validate `checkpoints/last/pretrained_model`, upload the complete
+deployable folder, write `training_summary.json`, and keep intermediate
+checkpoints off Hugging Face unless explicitly requested.
 
 ## 13. Significant failures, mistakes, and recovery
 
