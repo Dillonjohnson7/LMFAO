@@ -106,9 +106,11 @@ if [[ "$DRY" == "1" ]]; then
   exit 0
 fi
 
-echo "The follower will ENERGIZE and MOVE. Ctrl-C or cut power to stop."
-read -r -p "Workspace clear? [y/N] " ok
-[[ "$ok" == "y" || "$ok" == "Y" ]] || { echo "aborted"; exit 1; }
+if [[ "${ROLLOUT_YES:-0}" != "1" ]]; then
+  echo "The follower will ENERGIZE and MOVE. Ctrl-C or cut power to stop."
+  read -r -p "Workspace clear? [y/N] " ok
+  [[ "$ok" == "y" || "$ok" == "Y" ]] || { echo "aborted"; exit 1; }
+fi
 
 exec lerobot-rollout \
   --strategy.type=base \

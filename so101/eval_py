@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Run one so101/eval/*.py under the LeRobot venv, with dialout if the shell
+# lacks it. Exists so trial/rollout stay single-token: sourcing env.sh and
+# re-execing under sg in every caller is how one of them ends up subtly
+# different from the others.
+#
+#   ./so101/eval_py preflight.py
+#   ./so101/eval_py goto_start.py --dry
+set -euo pipefail
+
+SO101_DIR="$(cd "$(dirname "$0")" && pwd)"
+PORT="${FOLLOWER_PORT:-/dev/so101_follower}"
+
+if [[ -e "$PORT" && ! -w "$PORT" && -z "${SO101_SG_REEXEC:-}" ]] \
+   && getent group dialout | grep -qw "$(whoami)"; then
+  export SO101_SG_REEXEC=1
+  exec sg dialout -c "$(printf '%q ' "$0" "$@")"
+fi
+
+# shellcheck disable=SC1091
+source "$SO101_DIR/env.sh"
+script="$1"; shift
+exec python "$SO101_DIR/eval/$script" "$@"
