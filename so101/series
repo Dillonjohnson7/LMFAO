@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# A scored series: N trials, recorded to disk so the runs can be reviewed.
+#
+#   ./so101/series               # 20 trials x 90 s, stock
+#   ./so101/series 5             # 5 trials
+#   POLICY=lighting ./so101/series
+#   EPISODE_S=90 RESET_S=25 ./so101/series 20
+#   DISPLAY_DATA=1 ./so101/series   # watch it live as well
+#
+# Unlike ./so101/trial this uses LeRobot's episodic strategy, which writes a
+# real dataset -- front and wrist mp4s plus per-frame state and actions. That
+# matters because a rollout nobody recorded can only be scored from memory:
+# CHECKPOINT.md Mistake #13 is exactly this, and the v2 harness was changed to
+# self-record every run for the same reason. Rerun alone does not fix it; it
+# streams to a viewer, and .rrd files cannot be read back by the installed SDK.
+#
+# Between episodes there is a reset phase -- re-place the puck, and re-home the
+# arm if it drifted. Right arrow ends an episode or a reset early.
+#
+# Output (one directory per series, a standard LeRobot dataset root):
+#   so101/eval/run_recordings/<stamp>_<policy>/
+#       videos/observation.images.front/...    front camera, per episode
+#       videos/observation.images.wrist/...    wrist camera
+#       data/...                               state + actions per frame
+#       meta/                                  episode index, tasks, stats
+set -euo pipefail
+
+SO101_DIR="$(cd "$(dirname "$0")" && pwd)"
+LMFAO_DIR="$(cd "$SO101_DIR/.." && pwd)"
+
+if [[ -e "${FOLLOWER_PORT:-/dev/so101_follower}" && ! -w "${FOLLOWER_PORT:-/dev/so101_follower}" \
+      && -z "${SO101_SG_REEXEC:-}" ]] && getent group dialout | grep -qw "$(whoami)"; then
+  export SO101_SG_REEXEC=1
+  exec sg dialout -c "$(printf '%q ' "$0" "$@")"
+fi
+# shellcheck disable=SC1091
+source "$SO101_DIR/env.sh"
+
+N="${1:-20}"
+POLICY_NAME="${POLICY:-stock}"
+POLICY_PATH="${POLICY_PATH:-$LMFAO_DIR/policies/$POLICY_NAME}"
+TASK="${TASK:-pick the blue puck and place it in the brown box}"
+EPISODE_S="${EPISODE_S:-90}"
+RESET_S="${RESET_S:-25}"
+FPS="${FPS:-30}"
+PORT="${FOLLOWER_PORT:-/dev/so101_follower}"
+
+case "${DISPLAY_DATA:-0}" in
+  raw|RAW)     DISPLAY_DATA=true;  COMPRESS=false ;;
+  1|true|jpeg) DISPLAY_DATA=true;  COMPRESS=true  ;;
+  *)           DISPLAY_DATA=false; COMPRESS=true  ;;
+esac
+
+B=$'\033[1m'; G=$'\033[32m'; R=$'\033[31m'; X=$'\033[0m'
+
+[[ -f "$POLICY_PATH/model.safetensors" ]] || { echo "no policy at $POLICY_PATH" >&2; exit 1; }
+
+STAMP="$(date +%Y-%m-%d_%H%M)"
+OUT="${OUT_DIR:-$SO101_DIR/eval/run_recordings/${STAMP}_${POLICY_NAME}}"
+[[ -e "$OUT" ]] && { echo "$OUT already exists — pick another OUT_DIR" >&2; exit 1; }
+
+FRONT="$(readlink -f "$(cat "$SO101_DIR/front_cam.path")")"
+WRIST="$(readlink -f "$(cat "$SO101_DIR/wrist_cam.path")")"
+CAMERAS="{ \
+front: {type: opencv, index_or_path: ${FRONT}, width: 640, height: 480, fps: 30, fourcc: MJPG, warmup_s: 4}, \
+wrist: {type: opencv, index_or_path: ${WRIST}, width: 1280, height: 720, fps: 30, fourcc: MJPG, warmup_s: 4} \
+}"
+
+echo "${B}SERIES${X}  policy=${POLICY_NAME}  ${N} trials x ${EPISODE_S}s  (reset ${RESET_S}s)"
+echo "recording to: $OUT"
+echo
+echo "Right arrow ends an episode or a reset phase early."
+echo "During each reset: re-place the puck, and re-home the arm if it has drifted"
+echo "  (a second terminal:  ./so101/eval_py goto_start.py --yes)"
+echo
+if [[ "${SERIES_YES:-0}" != "1" ]]; then
+  read -r -p "The arm will move for the whole series. Workspace clear? [y/N] " ok
+  [[ "$ok" == "y" || "$ok" == "Y" ]] || { echo "aborted"; exit 1; }
+fi
+
+echo; echo "${B}=== gates ===${X}"
+POLICY_DIR="$POLICY_PATH" "$SO101_DIR/eval_py" preflight.py || {
+  echo; echo "${R}${B}SERIES ABORTED${X} — gates failed; the arm was not driven."; exit 1; }
+
+echo; echo "${B}=== start pose ===${X}"
+"$SO101_DIR/eval_py" goto_start.py --yes || echo "goto_start did not fully converge — continuing"
+
+echo; echo "${B}=== recording ${N} trials ===${X}"
+# push_to_hub defaults to TRUE upstream; these are eval rollouts of a policy
+# under test, not something to publish, so it is pinned off explicitly.
+lerobot-rollout \
+  --strategy.type=episodic \
+  --robot.type=so101_follower \
+  --robot.port="$PORT" \
+  --robot.id=follower \
+  --robot.cameras="$CAMERAS" \
+  --policy.path="$POLICY_PATH" \
+  --policy.device=cpu \
+  --device=cpu \
+  --task="$TASK" \
+  --fps="$FPS" \
+  --display_data="$DISPLAY_DATA" \
+  --display_compressed_images="$COMPRESS" \
+  --dataset.repo_id="local/eval_${POLICY_NAME}_${STAMP}" \
+  --dataset.root="$OUT" \
+  --dataset.single_task="$TASK" \
+  --dataset.num_episodes="$N" \
+  --dataset.episode_time_s="$EPISODE_S" \
+  --dataset.reset_time_s="$RESET_S" \
+  --dataset.video=true \
+  --dataset.push_to_hub=false
+
+echo
+echo "${G}${B}SERIES COMPLETE${X}  ->  $OUT"
+echo "Review:  ./so101/eval_py review.py \"$OUT\""
