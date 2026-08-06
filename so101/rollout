@@ -5,13 +5,18 @@
 #   ./so101/rollout            # 5 s smoke, stock policy
 #   ./so101/rollout 20         # 20 s
 #   POLICY=lighting ./so101/rollout 20
-#   DISPLAY_DATA=1 ./so101/rollout 20    # watch it live in rerun
+#   DISPLAY_DATA=1 ./so101/rollout 20    # watch it (JPEG-compressed)
+#   DISPLAY_DATA=raw ./so101/rollout 20  # watch it (raw frames)
 #
-# DISPLAY_DATA defaults OFF. Rerun streams both raw camera frames (~3.6 MB)
-# per control step -- ~108 MB/s -- which overruns its 1 GiB buffer in ~11 s
-# and drags the control loop well below 30 Hz. Measured on this NUC: cameras
-# sustain 30.0 Hz and ACT inference 161 Hz, so rerun is the only thing that
-# breaks cadence. Turn it on to watch a run, off to measure one.
+# DISPLAY_DATA: 0 = off (default) | 1 = rerun with JPEG frames | raw = rerun
+# with uncompressed frames. base.py logs every step via _log_telemetry, so at
+# "raw" both camera frames (~3.6 MB) cross the wire per control step, ~108
+# MB/s, and rerun's own log shows its 1 GiB buffer overrun 11 s into a 20 s
+# run. Measured here: cameras sustain 30.0 Hz and ACT inference 161 Hz, so
+# nothing else on the loop can account for the 5-6 Hz observed with raw on.
+# "1" is the same view at roughly 20-30x less bandwidth -- whether that is
+# enough to hold 30 Hz is exactly what the raw-vs-1 comparison answers.
+# Scored trials should use whichever holds 30 Hz; when unsure, 0.
 #
 # Single-token launcher: this terminal splits long multi-line pastes
 # (so101/STATUS.md), so the whole lerobot-rollout invocation lives here.
@@ -50,8 +55,12 @@ POLICY_PATH="${POLICY_PATH:-$LMFAO_DIR/policies/$POLICY_NAME}"
 TASK="${TASK:-pick the blue puck and place it in the brown box}"
 FPS="${FPS:-30}"
 PORT="${FOLLOWER_PORT:-/dev/so101_follower}"
-DISPLAY_DATA="${DISPLAY_DATA:-0}"
-[[ "$DISPLAY_DATA" == "1" || "$DISPLAY_DATA" == "true" ]] && DISPLAY_DATA=true || DISPLAY_DATA=false
+# off | 1 (JPEG-compressed) | raw (uncompressed, the cadence-killer)
+case "${DISPLAY_DATA:-0}" in
+  raw|RAW)        DISPLAY_DATA=true;  COMPRESS=false ;;
+  1|true|jpeg)    DISPLAY_DATA=true;  COMPRESS=true  ;;
+  *)              DISPLAY_DATA=false; COMPRESS=true  ;;
+esac
 
 # --- pre-flight -------------------------------------------------------------
 [[ -f "$POLICY_PATH/model.safetensors" ]] || {
@@ -98,7 +107,11 @@ echo "policy   : $POLICY_NAME  ($POLICY_PATH)"
 echo "duration : ${DURATION}s @ ${FPS} fps"
 echo "cameras  : front=$FRONT (640x480)  wrist=$WRIST (1280x720)"
 echo "task     : $TASK"
-echo "rerun    : $DISPLAY_DATA$([[ "$DISPLAY_DATA" == "true" ]] && echo '  (costs cadence — off for scored trials)')"
+if [[ "$DISPLAY_DATA" == "true" ]]; then
+  echo "rerun    : on, $([[ "$COMPRESS" == "true" ]] && echo 'JPEG frames' || echo 'RAW frames — expect the loop to fall below 30 Hz')"
+else
+  echo "rerun    : off"
+fi
 echo
 
 if [[ "$DRY" == "1" ]]; then
@@ -125,4 +138,5 @@ exec lerobot-rollout \
   --fps="$FPS" \
   --duration="$DURATION" \
   --display_data="$DISPLAY_DATA" \
+  --display_compressed_images="$COMPRESS" \
   --return_to_initial_position=true

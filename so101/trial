@@ -4,7 +4,7 @@
 #   ./so101/trial                  # 20 s, stock, rerun off
 #   ./so101/trial 30               # 30 s
 #   POLICY=lighting ./so101/trial  # another bucket
-#   DISPLAY_DATA=1 ./so101/trial   # watch it (JPEG-compressed, see below)
+#   DISPLAY_DATA=1 ./so101/trial   # watch it (JPEG); =raw for uncompressed
 #   SKIP_POSE=1 ./so101/trial      # rollout without re-homing the arm
 #
 # One token, one confirmation, three stages -- this terminal splits long
