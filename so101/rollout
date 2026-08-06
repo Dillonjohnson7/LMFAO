@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# SO101 policy rollout — drive the follower with a trained ACT policy.
+#
+#   ./so101/rollout --dry      # print the command, touch nothing
+#   ./so101/rollout            # 5 s smoke, stock policy
+#   ./so101/rollout 20         # 20 s
+#   POLICY=lighting ./so101/rollout 20
+#
+# Single-token launcher: this terminal splits long multi-line pastes
+# (so101/STATUS.md), so the whole lerobot-rollout invocation lives here.
+#
+# SAFETY: the follower energizes on connect and then moves under policy
+# control. Clear the swept volume and keep power/e-stop in reach. Do NOT
+# connect the leader — the policy drives the arm, not you.
+#
+# Camera geometry is fixed to what pick_place_v3 trained on (front 640x480,
+# wrist 1280x720, 30 fps). Do not change it without retraining.
+set -euo pipefail
+
+SO101_DIR="$(cd "$(dirname "$0")" && pwd)"
+LMFAO_DIR="$(cd "$SO101_DIR/.." && pwd)"
+# shellcheck disable=SC1091
+source "$SO101_DIR/env.sh"
+
+DRY=0
+[[ "${1:-}" == "--dry" ]] && { DRY=1; shift; }
+
+DURATION="${1:-5}"
+POLICY_NAME="${POLICY:-stock}"
+POLICY_PATH="${POLICY_PATH:-$LMFAO_DIR/policies/$POLICY_NAME}"
+TASK="${TASK:-pick the blue puck and place it in the brown box}"
+FPS="${FPS:-30}"
+PORT="${FOLLOWER_PORT:-/dev/so101_follower}"
+
+# --- pre-flight -------------------------------------------------------------
+[[ -f "$POLICY_PATH/model.safetensors" ]] || {
+  echo "no policy at $POLICY_PATH" >&2
+  echo "  copy one from RunPod first (docs/policytraining_v3.md 1.2)" >&2
+  exit 1; }
+
+for f in config.json policy_preprocessor.json policy_postprocessor.json; do
+  [[ -f "$POLICY_PATH/$f" ]] || {
+    echo "$POLICY_PATH is incomplete: missing $f" >&2
+    echo "  LeRobot needs the whole pretrained_model dir, not just weights" >&2
+    exit 1; }
+done
+
+[[ -e "$PORT" ]] || { echo "follower not found at $PORT — is it plugged in?" >&2; exit 1; }
+if [[ ! -r "$PORT" || ! -w "$PORT" ]]; then
+  echo "cannot access $PORT (dialout group not active in this shell)." >&2
+  echo "  fix: log out and back in, or re-run as:  sg dialout -c '$0 $*'" >&2
+  exit 1
+fi
+
+[[ -f "$SO101_DIR/front_cam.path" && -f "$SO101_DIR/wrist_cam.path" ]] || {
+  echo "camera pins missing — run: python so101/eval/cam_check.py --find-front && --find" >&2
+  exit 1; }
+
+FRONT="$(readlink -f "$(cat "$SO101_DIR/front_cam.path")")"
+WRIST="$(readlink -f "$(cat "$SO101_DIR/wrist_cam.path")")"
+[[ -e "$FRONT" ]] || { echo "front cam $FRONT missing — re-pin with cam_check.py --find-front" >&2; exit 1; }
+[[ -e "$WRIST" ]] || { echo "wrist cam $WRIST missing — re-pin with cam_check.py --find" >&2; exit 1; }
+[[ "$FRONT" != "$WRIST" ]] || { echo "front and wrist resolve to the same device" >&2; exit 1; }
+
+CAMERAS="{ \
+front: {type: opencv, index_or_path: ${FRONT}, width: 640, height: 480, fps: 30, fourcc: MJPG}, \
+wrist: {type: opencv, index_or_path: ${WRIST}, width: 1280, height: 720, fps: 30, fourcc: MJPG} \
+}"
+
+echo "policy   : $POLICY_NAME  ($POLICY_PATH)"
+echo "duration : ${DURATION}s @ ${FPS} fps"
+echo "cameras  : front=$FRONT (640x480)  wrist=$WRIST (1280x720)"
+echo "task     : $TASK"
+echo
+
+if [[ "$DRY" == "1" ]]; then
+  echo "--dry: pre-flight passed, nothing was run. Remove --dry to drive the arm."
+  exit 0
+fi
+
+echo "The follower will ENERGIZE and MOVE. Ctrl-C or cut power to stop."
+read -r -p "Workspace clear? [y/N] " ok
+[[ "$ok" == "y" || "$ok" == "Y" ]] || { echo "aborted"; exit 1; }
+
+exec lerobot-rollout \
+  --strategy.type=base \
+  --robot.type=so101_follower \
+  --robot.port="$PORT" \
+  --robot.id=follower \
+  --robot.cameras="$CAMERAS" \
+  --policy.path="$POLICY_PATH" \
+  --policy.device=cpu \
+  --device=cpu \
+  --task="$TASK" \
+  --fps="$FPS" \
+  --duration="$DURATION" \
+  --display_data=true \
+  --return_to_initial_position=true
