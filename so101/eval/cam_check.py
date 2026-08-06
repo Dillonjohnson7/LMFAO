@@ -66,6 +66,12 @@ PROBE_DIR = str(_ROOT / "eval" / "cam_probe")
 ANVIL_CAM_DIR = "/run/cameras"
 ROS2_CONTAINER = "anvil-loader-ros2"          # substring match against `docker ps`
 W, H, FPS = 1280, 720, 30
+# Per-role capture geometry, from the pick_place_v3 training data (and so the
+# policies trained on it): front is 640x480, wrist is 1280x720, both at 30 fps.
+# Probing every camera at 1280x720 falsely fails a front cam that is correct —
+# the RealSense D415 color stream has no 30 fps mode at 720p (uncompressed YUYV
+# only) but does deliver 30 fps at the 640x480 it is actually used at.
+ROLE_GEOM = {"front": (640, 480), "wrist": (1280, 720)}
 
 # VIDIOC_G_FMT / VIDIOC_S_FMT — _IOWR('V', 4|5, struct v4l2_format[208])
 VIDIOC_G_FMT = (3 << 30) | (208 << 16) | (ord("V") << 8) | 4
@@ -164,13 +170,15 @@ def by_path_for(node):
 
 
 def grab_test(dev, label, n=45):
-    """Open dev at 1280x720 MJPG 30fps, read n frames, report. True on success."""
+    """Open dev at its role's trained geometry (MJPG, 30 fps), read n frames,
+    report. True on success."""
+    w_want, h_want = ROLE_GEOM.get(label, (W, H))
     real = os.path.realpath(dev)              # cv2's V4L2 backend can't open by-id/by-path symlinks
     print(f"  {label}: opening {dev}" + (f" -> {real}" if real != dev else "") + " ...", flush=True)
     cap = cv2.VideoCapture(real, cv2.CAP_V4L2)
     cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, W)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, H)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, w_want)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h_want)
     cap.set(cv2.CAP_PROP_FPS, FPS)
     if not cap.isOpened():
         print(f"  {RED}✗ {label}: could not open {dev}{RST}")
@@ -195,11 +203,12 @@ def grab_test(dev, label, n=45):
     os.makedirs(PROBE_DIR, exist_ok=True)
     out = f"{PROBE_DIR}/{label}.jpg"
     cv2.imwrite(out, frame)
-    good = (w, h) == (W, H) and fps > 25
+    good = (w, h) == (w_want, h_want) and fps > 25
     mark = f"{GRN}✓{RST}" if good else f"{YEL}⚠{RST}"
     print(f"  {mark} {label}: {w}x{h} @ {fps:.1f} fps ({got}/{n} frames) — probe saved to {out}")
-    if (w, h) != (W, H):
-        print(f"    {YEL}resolution is not {W}x{H} — the recorder/policy expect {W}x{H}{RST}")
+    if (w, h) != (w_want, h_want):
+        print(f"    {YEL}resolution is not {w_want}x{h_want} — the recorder/policy "
+              f"expect {w_want}x{h_want} for {label}{RST}")
     if fps <= 25:
         print(f"    {YEL}below 30 fps — try a different (direct) USB port{RST}")
     return good
