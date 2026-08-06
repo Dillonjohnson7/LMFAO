@@ -224,7 +224,7 @@ Snapshot around **2026-08-06 19:00 America/New_York**.
 | stock | 100k complete | `fnre6t63nr42wq` EXITED | policy + dataset verified |
 | spatial | 100k complete | `q7k4rlc4d5cp0w` EXITED | policy + dataset verified |
 | occlusion | 100k complete | `qmpthutzu6r2dl` EXITED | policy + dataset verified |
-| full | 100k complete | `q5vlgbs5tnxsyd` RUNNING (idle) | policy + dataset verified |
+| full | 100k complete | `q5vlgbs5tnxsyd` EXITED | policy + dataset verified |
 | lighting | ~21k / 100k @ ~2.0 steps/s | `7k25sdlk1rkgi1` RUNNING | reserved only |
 | noise | ~15k / 100k @ ~1.6 steps/s | `p3zptith51vy9b` RUNNING | reserved only |
 
@@ -405,7 +405,7 @@ Canonical map (status as of latest snapshot):
 lmfao-act-stock      fnre6t63nr42wq   EXITED after HF retention
 lmfao-act-spatial    q7k4rlc4d5cp0w   EXITED after HF retention
 lmfao-act-occlusion  qmpthutzu6r2dl   EXITED after HF retention
-lmfao-act-full       q5vlgbs5tnxsyd   RUNNING
+lmfao-act-full       q5vlgbs5tnxsyd   EXITED after HF retention
 lmfao-act-lighting   7k25sdlk1rkgi1   RUNNING
 lmfao-act-noise      p3zptith51vy9b   RUNNING
 ```
@@ -744,9 +744,10 @@ export RUNPOD_API_KEY="$(<"$HOME/.config/lmfao/runpod_api_key")"
 runpodctl pod stop fnre6t63nr42wq   # stock
 runpodctl pod stop q7k4rlc4d5cp0w   # spatial
 runpodctl pod stop qmpthutzu6r2dl   # occlusion
+runpodctl pod stop q5vlgbs5tnxsyd   # full
 ```
 
-Still training (do not touch): full, lighting, noise.
+Still training (do not touch): lighting, noise.
 
 Do not terminate pods until their network volumes are no longer needed.
 
@@ -927,7 +928,7 @@ size mismatches:        0
 ### 12.4 Full policy + dataset
 
 ```text
-pod:          lmfao-act-full / q5vlgbs5tnxsyd  (idle after verify)
+pod:          lmfao-act-full / q5vlgbs5tnxsyd  (EXITED after verify)
 done marker:  /workspace/runs/eval_buckets/full.done
 checkpoints:  020000, 040000, 060000, 080000, 100000
 last:         100000
