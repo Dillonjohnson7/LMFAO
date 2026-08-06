@@ -134,7 +134,11 @@ def main() -> None:
 
         # A real place both holds the puck and relocates it. A peck-and-retry
         # closes the jaws briefly and leaves the puck exactly where it started.
-        if moved_cm is None:
+        if moved_cm is None and held < 3.0:
+            # Arm parked over the puck hides it, but a run that never held the
+            # puck did not place it either -- no need to defer that one.
+            verdict = "FAIL - never secured the puck (puck hidden at end)"
+        elif moved_cm is None:
             verdict = "puck not visible - review the sheet"
         elif held >= 3.0 and moved_cm >= 5.0:
             verdict = "SUCCESS - carried and placed"
