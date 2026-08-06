@@ -140,8 +140,10 @@ def read_lerobot_dataset(
     Parameters
     ----------
     video_key:
-        Which camera stream to load as the episode frames. Defaults to the first
-        ``dtype == "video"`` feature in ``info.json``.
+        Load only this camera into ``Episode.frames`` (single-stream mode).
+        When omitted, **all on-disk camera streams** are loaded: the first
+        becomes ``frames`` / ``metadata["video_key"]``, the rest go in
+        ``extra_videos`` so dual-cam demos (front+wrist) round-trip intact.
     episodes:
         Explicit episode indices to load (default: all).
     limit:
@@ -157,15 +159,18 @@ def read_lerobot_dataset(
     keys = _video_keys(info)
     if not keys:
         raise ValueError(f"no video features found in {root}/meta/info.json")
+    on_disk = [k for k in keys if (root / "videos" / k).exists()]
     if video_key is None:
-        # Partially-downloaded datasets can declare streams whose shards were
-        # never pulled; default to one that is actually on disk.
-        on_disk = [k for k in keys if (root / "videos" / k).exists()]
-        key = (on_disk or keys)[0]
+        load_keys = list(on_disk or keys)
+        key = load_keys[0]
     else:
         key = video_key
+        load_keys = [key]
     if key not in keys:
         raise ValueError(f"video_key {key!r} not in dataset (have: {', '.join(keys)})")
+    for k in load_keys:
+        if k not in keys:
+            raise ValueError(f"video_key {k!r} not in dataset (have: {', '.join(keys)})")
 
     data_tpl = info["data_path"]
     video_tpl = info["video_path"]
@@ -244,37 +249,41 @@ def read_lerobot_dataset(
         state = _col("observation.state")
         actions = _col("action")
 
-        # --- frames from the chosen video shard ---
-        if f"videos/{key}/chunk_index" not in rec:
-            raise ValueError(
-                f"video_key {key!r} is declared in info.json but episode {ep_index}'s "
-                f"record has no columns for it; pass a video_key the episodes actually "
-                f"reference (have: {', '.join(k for k in keys if f'videos/{k}/chunk_index' in rec)})"
-            )
-        vchunk = int(rec[f"videos/{key}/chunk_index"])
-        vfile = int(rec[f"videos/{key}/file_index"])
-        from_ts = float(rec[f"videos/{key}/from_timestamp"])
-        to_ts = float(rec[f"videos/{key}/to_timestamp"])
-        vpath = root / video_tpl.format(video_key=key, chunk_index=vchunk, file_index=vfile)
-        if not vpath.exists():
-            on_disk = sorted(
-                p.name for p in (root / "videos").glob("*") if p.is_dir()
-            ) if (root / "videos").exists() else []
-            raise ValueError(
-                f"video shard {vpath} for episode {ep_index} (video_key {key!r}) does "
-                f"not exist; streams on disk: {', '.join(on_disk) or 'none'}. "
-                "Pass video_key= to pick a downloaded stream."
-            )
+        # --- frames from every requested video shard ---
         expected = min(length, int(max_frames)) if max_frames else length
-        frames = _decode_frames(av, vpath, from_ts, to_ts, expected=expected)
+        decoded: dict[str, np.ndarray] = {}
+        for vk in load_keys:
+            if f"videos/{vk}/chunk_index" not in rec:
+                raise ValueError(
+                    f"video_key {vk!r} is declared in info.json but episode {ep_index}'s "
+                    f"record has no columns for it; pass a video_key the episodes actually "
+                    f"reference (have: {', '.join(k for k in keys if f'videos/{k}/chunk_index' in rec)})"
+                )
+            vchunk = int(rec[f"videos/{vk}/chunk_index"])
+            vfile = int(rec[f"videos/{vk}/file_index"])
+            from_ts = float(rec[f"videos/{vk}/from_timestamp"])
+            to_ts = float(rec[f"videos/{vk}/to_timestamp"])
+            vpath = root / video_tpl.format(video_key=vk, chunk_index=vchunk, file_index=vfile)
+            if not vpath.exists():
+                disk = sorted(
+                    p.name for p in (root / "videos").glob("*") if p.is_dir()
+                ) if (root / "videos").exists() else []
+                raise ValueError(
+                    f"video shard {vpath} for episode {ep_index} (video_key {vk!r}) does "
+                    f"not exist; streams on disk: {', '.join(disk) or 'none'}. "
+                    "Pass video_key= to pick a downloaded stream."
+                )
+            decoded[vk] = _decode_frames(av, vpath, from_ts, to_ts, expected=expected)
 
-        # Align lengths (decoder can hand back one extra/fewer at boundaries).
-        n = frames.shape[0]
+        frames = decoded[key]
+        # Align lengths across cameras + state (decoder can drift at boundaries).
+        n = min(arr.shape[0] for arr in decoded.values())
         if state is not None:
             n = min(n, state.shape[0])
         if max_frames is not None:
             n = min(n, int(max_frames))
         frames = frames[:n]
+        extras = {vk: arr[:n] for vk, arr in decoded.items() if vk != key}
         if state is not None:
             state = state[:n]
         if actions is not None:
@@ -299,6 +308,7 @@ def read_lerobot_dataset(
         metadata["episode_index"] = ep_index
         metadata["source_dataset"] = root.name
         metadata["video_key"] = key
+        metadata["video_keys"] = list(load_keys)
 
         out.append(
             Episode(
@@ -310,6 +320,7 @@ def read_lerobot_dataset(
                 camera_poses=None,
                 intrinsics=None,
                 metadata=metadata,
+                extra_videos=extras,
             )
         )
     return out
@@ -324,9 +335,34 @@ def _vec_type(pa, dim: int):
     return pa.list_(pa.float32(), dim) if dim > 0 else pa.list_(pa.float32())
 
 
-def _build_info(*, video_key: str, h: int, w: int, state_dim: int, action_dim: int,
-                fps: float, codec_note: str, total_episodes: int, total_frames: int,
-                total_tasks: int) -> dict:
+def _video_feature_block(h: int, w: int, fps: float, codec_note: str) -> dict:
+    return {
+        "dtype": "video",
+        "shape": [h, w, 3],
+        "names": ["height", "width", "channels"],
+        "info": {
+            "is_depth_map": False,
+            "video.height": h, "video.width": w,
+            "video.codec": codec_note, "video.pix_fmt": "yuv420p",
+            "video.fps": fps, "video.channels": 3, "has_audio": False,
+        },
+    }
+
+
+def _build_info(
+    *,
+    video_key: str | None = None,
+    h: int | None = None,
+    w: int | None = None,
+    video_features: dict[str, tuple[int, int]] | None = None,
+    state_dim: int,
+    action_dim: int,
+    fps: float,
+    codec_note: str,
+    total_episodes: int,
+    total_frames: int,
+    total_tasks: int,
+) -> dict:
     """Build a LeRobot v3.0 info.json.
 
     Declares every per-frame data column as a feature (state, action, and the
@@ -334,7 +370,30 @@ def _build_info(*, video_key: str, h: int, w: int, state_dim: int, action_dim: i
     expects: it derives the parquet schema from these features, so a data column
     that is not declared makes ``Dataset.from_parquet`` fail. Also emits
     ``splits`` and the size fields real datasets carry.
+
+    Pass either ``video_features={key: (h, w), ...}`` (multi-cam) or the legacy
+    single-stream ``video_key`` + ``h`` + ``w``.
     """
+    if video_features is None:
+        if video_key is None or h is None or w is None:
+            raise ValueError("pass video_features= or video_key/h/w")
+        video_features = {video_key: (int(h), int(w))}
+    if not video_features:
+        raise ValueError("video_features must not be empty")
+
+    features: dict[str, Any] = {
+        "observation.state": {"dtype": "float32", "shape": [state_dim], "names": None},
+        "action": {"dtype": "float32", "shape": [action_dim], "names": None},
+    }
+    for vk, (vh, vw) in video_features.items():
+        features[vk] = _video_feature_block(int(vh), int(vw), fps, codec_note)
+    features.update({
+        "timestamp": {"dtype": "float32", "shape": [1], "names": None},
+        "frame_index": {"dtype": "int64", "shape": [1], "names": None},
+        "episode_index": {"dtype": "int64", "shape": [1], "names": None},
+        "index": {"dtype": "int64", "shape": [1], "names": None},
+        "task_index": {"dtype": "int64", "shape": [1], "names": None},
+    })
     return {
         "codebase_version": "v3.0",
         "robot_type": "lmfao_synthetic",
@@ -348,29 +407,20 @@ def _build_info(*, video_key: str, h: int, w: int, state_dim: int, action_dim: i
         "splits": {"train": f"0:{total_episodes}"},
         "data_path": "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet",
         "video_path": "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4",
-        "features": {
-            "observation.state": {"dtype": "float32", "shape": [state_dim], "names": None},
-            "action": {"dtype": "float32", "shape": [action_dim], "names": None},
-            video_key: {
-                "dtype": "video",
-                "shape": [h, w, 3],
-                "names": ["height", "width", "channels"],
-                "info": {
-                    "is_depth_map": False,
-                    "video.height": h, "video.width": w,
-                    "video.codec": codec_note, "video.pix_fmt": "yuv420p",
-                    "video.fps": fps, "video.channels": 3, "has_audio": False,
-                },
-            },
-            # Every remaining data-parquet column must be declared or the loader's
-            # schema won't match the parquet.
-            "timestamp": {"dtype": "float32", "shape": [1], "names": None},
-            "frame_index": {"dtype": "int64", "shape": [1], "names": None},
-            "episode_index": {"dtype": "int64", "shape": [1], "names": None},
-            "index": {"dtype": "int64", "shape": [1], "names": None},
-            "task_index": {"dtype": "int64", "shape": [1], "names": None},
-        },
+        "features": features,
     }
+
+
+def _episode_video_map(ep: Episode, *, default_key: str) -> dict[str, np.ndarray]:
+    """Primary frames + extras, keyed by LeRobot feature name."""
+    primary = str(ep.metadata.get("video_key") or default_key)
+    out = {primary: ep.frames}
+    for k, v in ep.extra_videos.items():
+        if k == primary:
+            raise ValueError(f"extra_videos collides with primary key {k!r}")
+        out[str(k)] = v
+    return out
+
 
 
 def _write_tasks_parquet(pq, pa, path: Path, tasks: list[str]) -> None:
@@ -473,8 +523,9 @@ def write_lerobot_dataset(
     """Write episodes to ``root`` in a LeRobot v3-style layout.
 
     All episodes are concatenated into one video shard + one data parquet
-    (``chunk-000/file-000``), which :func:`read_lerobot_dataset` round-trips.
-    Every episode must share frame geometry (height/width/channels).
+    (``chunk-000/file-000``) per camera key, which :func:`read_lerobot_dataset`
+    round-trips. Every episode must share the same camera set; each camera may
+    have its own H×W (front vs wrist), but that geometry is fixed across episodes.
     """
     pq, av = _require_deps()
     import pyarrow as pa
@@ -482,28 +533,38 @@ def write_lerobot_dataset(
     if not episodes:
         raise ValueError("no episodes to write")
     root = Path(root)
-    ref = episodes[0]
-    h, w = ref.height, ref.width
-    for ep in episodes:
-        if (ep.height, ep.width) != (h, w):
-            raise ValueError("all episodes must share height/width to write one shard")
-    if h % 2 or w % 2:
-        raise ValueError(
-            f"frame size {w}x{h} is not encodable: libx264/yuv420p needs even "
-            "width and height. Crop or pad the frames to even dimensions first."
-        )
-    fps = float(ref.fps)
+    ref_map = _episode_video_map(episodes[0], default_key=video_key)
+    video_keys = list(ref_map.keys())
+    # Stamp primary onto episodes that lack video_key so read-back is stable.
+    primary_key = video_keys[0]
+    geoms = {k: (int(v.shape[1]), int(v.shape[2])) for k, v in ref_map.items()}
+    for ei, ep in enumerate(episodes):
+        vmap = _episode_video_map(ep, default_key=primary_key)
+        if set(vmap) != set(video_keys):
+            raise ValueError(
+                f"episode {ei} cameras {sorted(vmap)} != dataset cameras {sorted(video_keys)}"
+            )
+        for k, arr in vmap.items():
+            hw = (int(arr.shape[1]), int(arr.shape[2]))
+            if hw != geoms[k]:
+                raise ValueError(
+                    f"episode {ei} camera {k!r} is {hw[1]}x{hw[0]} but dataset is "
+                    f"{geoms[k][1]}x{geoms[k][0]}; all episodes must share per-camera geometry"
+                )
+            if hw[0] % 2 or hw[1] % 2:
+                raise ValueError(
+                    f"frame size {hw[1]}x{hw[0]} for {k!r} is not encodable: "
+                    "libx264/yuv420p needs even width and height."
+                )
+    fps = float(episodes[0].fps)
     for ep in episodes:
         if abs(float(ep.fps) - fps) > 1e-6:
             raise ValueError(
-                f"all episodes must share fps to write one shard: got {ep.fps} and {fps}. "
-                "The video is one stream, so a single frame rate applies."
+                f"all episodes must share fps to write one shard: got {ep.fps} and {fps}."
             )
     if sum(ep.num_frames for ep in episodes) == 0:
         raise ValueError("refusing to write a dataset with zero frames")
 
-    # State/actions presence must be consistent: mixing None with real arrays
-    # would silently fabricate all-zero rows for the None episodes on read-back.
     has_state = {ep.state is not None for ep in episodes}
     if len(has_state) > 1:
         raise ValueError(
@@ -517,18 +578,11 @@ def write_lerobot_dataset(
             "agree on action presence so absence is not silently fabricated as zeros"
         )
 
-    # Replace any dataset already at this root: the writer emits a single
-    # chunk-000/file-000 shard, so stale multi-shard trees left in place would
-    # make _episode_records glob a hybrid of new and old records.
     for sub in ("data", "videos", "meta"):
         existing = root / sub
         if existing.exists():
             import shutil
-
             shutil.rmtree(existing)
-
-    # --- concatenate frames + per-frame rows ---
-    all_frames = np.concatenate([_to_uint8_rgb(ep.frames) for ep in episodes], axis=0)
 
     tasks: list[str] = []
     task_to_index: dict[str, int] = {}
@@ -546,6 +600,16 @@ def write_lerobot_dataset(
                 f"uses {action_dim}; all episodes must agree"
             )
 
+    # Concatenate each camera independently (different H×W allowed).
+    all_by_key = {
+        k: np.concatenate(
+            [_to_uint8_rgb(_episode_video_map(ep, default_key=primary_key)[k]) for ep in episodes],
+            axis=0,
+        )
+        for k in video_keys
+    }
+    total_frames = int(next(iter(all_by_key.values())).shape[0])
+
     states: list[list[float]] = []
     actions: list[list[float]] = []
     timestamps: list[float] = []
@@ -553,7 +617,7 @@ def write_lerobot_dataset(
     episode_indices: list[int] = []
     task_indices: list[int] = []
     ep_records: list[dict] = []
-    samples: dict[str, list] = {}  # per-feature reduced samples for meta/stats.json
+    samples: dict[str, list] = {}
 
     cursor = 0
     for ei, ep in enumerate(episodes):
@@ -581,16 +645,18 @@ def write_lerobot_dataset(
             "data/file_index": 0,
             "dataset_from_index": cursor,
             "dataset_to_index": cursor + n,
-            f"videos/{video_key}/chunk_index": 0,
-            f"videos/{video_key}/file_index": 0,
-            f"videos/{video_key}/from_timestamp": cursor / fps,
-            f"videos/{video_key}/to_timestamp": (cursor + n) / fps,
         }
-        # Per-episode normalization stats (LeRobot loads the aggregate at train time).
-        rgb = _to_uint8_rgb(ep.frames)  # always 3-channel; matches the written video
-        img = reduce_samples(rgb, is_image=True, seed=ei)
-        ep_stats = {video_key: stats_from_samples(img, count=n, image_channels=int(rgb.shape[-1]))}
-        samples.setdefault(video_key, []).append(img)
+        vmap = _episode_video_map(ep, default_key=primary_key)
+        ep_stats: dict[str, dict] = {}
+        for vk in video_keys:
+            rec[f"videos/{vk}/chunk_index"] = 0
+            rec[f"videos/{vk}/file_index"] = 0
+            rec[f"videos/{vk}/from_timestamp"] = cursor / fps
+            rec[f"videos/{vk}/to_timestamp"] = (cursor + n) / fps
+            rgb = _to_uint8_rgb(vmap[vk])
+            img = reduce_samples(rgb, is_image=True, seed=ei + hash(vk) % 997)
+            ep_stats[vk] = stats_from_samples(img, count=n, image_channels=int(rgb.shape[-1]))
+            samples.setdefault(vk, []).append(img)
         if state_dim > 0:
             sv = np.asarray(ep.state, dtype=np.float64) if ep.state is not None else np.zeros((n, state_dim))
             red = reduce_samples(sv, is_image=False)
@@ -607,24 +673,20 @@ def write_lerobot_dataset(
         ep_records.append(rec)
         cursor += n
 
-    # --- video first: encoding is the step most likely to fail, so do it before
-    # any metadata lands on disk and a failure cannot leave a half-written,
-    # structurally-valid-but-videoless dataset behind. ---
-    _encode_video(av, root / "videos" / video_key / "chunk-000" / "file-000.mp4", all_frames, fps,
-                  preset=video_preset)
+    for vk, frames in all_by_key.items():
+        _encode_video(
+            av, root / "videos" / vk / "chunk-000" / "file-000.mp4", frames, fps,
+            preset=video_preset,
+        )
 
-    # --- info.json ---
     info = _build_info(
-        video_key=video_key, h=h, w=w, state_dim=state_dim, action_dim=action_dim, fps=fps,
+        video_features=geoms, state_dim=state_dim, action_dim=action_dim, fps=fps,
         codec_note=codec_note, total_episodes=len(episodes),
-        total_frames=int(all_frames.shape[0]), total_tasks=len(tasks),
+        total_frames=total_frames, total_tasks=len(tasks),
     )
     (root / "meta").mkdir(parents=True, exist_ok=True)
     (root / "meta" / "info.json").write_text(json.dumps(info, indent=1))
 
-    # --- data parquet ---
-    # LeRobot declares state/action as fixed-length vectors, so store them as
-    # fixed_size_list<float>[dim] (a variable list<> fails LeRobot's schema check).
     data_table = pa.table(
         {
             "observation.state": pa.array(states, type=_vec_type(pa, state_dim)),
@@ -640,28 +702,23 @@ def write_lerobot_dataset(
     dpath.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(data_table, dpath)
 
-    # --- episodes meta parquet ---
     ep_cols: dict[str, list] = {k: [r[k] for r in ep_records] for k in ep_records[0]}
     epath = root / "meta" / "episodes" / "chunk-000" / "file-000.parquet"
     epath.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.table(ep_cols), epath)
 
-    # --- tasks parquet (with the pandas index metadata LeRobot expects) ---
     _write_tasks_parquet(pq, pa, root / "meta" / "tasks.parquet", tasks)
 
-    # --- aggregate stats.json (LeRobot normalizes training inputs from this) ---
     stats = {}
+    video_key_set = set(video_keys)
     for feat, reds in samples.items():
         allr = np.concatenate(reds, axis=0)
-        channels = allr.shape[1] if feat == video_key else None
-        st = stats_from_samples(allr, count=int(all_frames.shape[0]), image_channels=channels)
+        channels = allr.shape[1] if feat in video_key_set else None
+        st = stats_from_samples(allr, count=total_frames, image_channels=channels)
         stats[feat] = stats_to_lists(st)
     (root / "meta" / "stats.json").write_text(json.dumps(stats, indent=1))
 
-    # --- provenance sidecar (plan §8d: keep synthetic episodes distinguishable) ---
-    # Reader-owned keys are recomputed on every read; persisting them here would
-    # bake in stale values from the *source* dataset.
-    reader_owned = {"episode_index", "source_dataset", "video_key"}
+    reader_owned = {"episode_index", "source_dataset", "video_key", "video_keys"}
     provenance = [
         {k: v for k, v in ep.metadata.items() if k not in reader_owned} for ep in episodes
     ]
@@ -677,22 +734,16 @@ def write_lerobot_dataset(
 class LeRobotStreamingWriter:
     """Write a LeRobot dataset one episode at a time (bounded memory + resumable).
 
-    Each episode is its own video + data file (``file_index`` increments), a valid
-    v3 layout that :func:`read_lerobot_dataset` reads via each record's per-episode
-    ranges. Unlike :func:`write_lerobot_dataset` (which concatenates every frame
-    into one in-memory shard), this holds only the current episode's frames, so a
-    45x14 run of 720p footage never materializes the whole dataset at once.
-
-    ``state_dict`` / ``load_state_dict`` capture everything needed to ``close()``
-    after a restart, so a caller can checkpoint after each source episode and
-    ``--resume`` a killed run. All of :func:`write_lerobot_dataset`'s guards apply.
+    Supports one or many camera keys. Each episode is its own video file per
+    camera + one data parquet (``file_index`` increments).
     """
 
     def __init__(
         self,
         root: str | Path,
         *,
-        video_key: str,
+        video_key: str | None = None,
+        video_keys: Sequence[str] | None = None,
         fps: float,
         state_dim: int,
         action_dim: int,
@@ -701,7 +752,16 @@ class LeRobotStreamingWriter:
     ) -> None:
         self._pq, self._av = _require_deps()
         self.root = Path(root)
-        self.video_key = video_key
+        if video_keys is not None:
+            keys = [str(k) for k in video_keys]
+        elif video_key is not None:
+            keys = [str(video_key)]
+        else:
+            raise ValueError("pass video_key= or video_keys=")
+        if not keys:
+            raise ValueError("video_keys must not be empty")
+        self.video_keys = list(keys)
+        self.video_key = self.video_keys[0]
         self.fps = float(fps)
         self.state_dim = int(state_dim)
         self.action_dim = int(action_dim)
@@ -713,8 +773,10 @@ class LeRobotStreamingWriter:
         self._tasks: list[str] = []
         self._task_index: dict[str, int] = {}
         self._provenance: list[dict] = []
-        self._samples: dict[str, list] = {}  # per-feature reduced samples for stats.json
+        self._samples: dict[str, list] = {}
         self._global_index = 0
+        self._geoms: dict[str, tuple[int, int]] = {}
+        # legacy aliases used by older checkpoints
         self._h: int | None = None
         self._w: int | None = None
 
@@ -723,16 +785,15 @@ class LeRobotStreamingWriter:
         return len(self._rows)
 
     def missing_files(self) -> list[str]:
-        """Per-episode video/data files named in the current state that are not on
-        disk. Used to detect a checkpoint whose output was deleted/moved before a
-        --resume, so we refuse instead of finalizing a corrupt dataset."""
         missing: list[str] = []
         for ei in range(len(self._rows)):
-            vpath = self.root / "videos" / self.video_key / "chunk-000" / f"file-{ei:03d}.mp4"
             dpath = self.root / "data" / "chunk-000" / f"file-{ei:03d}.parquet"
-            for p in (vpath, dpath):
-                if not p.exists():
-                    missing.append(str(p))
+            if not dpath.exists():
+                missing.append(str(dpath))
+            for vk in self.video_keys:
+                vpath = self.root / "videos" / vk / "chunk-000" / f"file-{ei:03d}.mp4"
+                if not vpath.exists():
+                    missing.append(str(vpath))
         return missing
 
     def state_dict(self) -> dict:
@@ -740,9 +801,10 @@ class LeRobotStreamingWriter:
             "rows": self._rows, "tasks": self._tasks, "task_index": self._task_index,
             "provenance": self._provenance, "samples": self._samples,
             "global_index": self._global_index,
+            "geoms": self._geoms,
             "h": self._h, "w": self._w,
-            "video_key": self.video_key, "fps": self.fps,
-            "state_dim": self.state_dim, "action_dim": self.action_dim,
+            "video_key": self.video_key, "video_keys": self.video_keys,
+            "fps": self.fps, "state_dim": self.state_dim, "action_dim": self.action_dim,
         }
 
     def load_state_dict(self, state: dict) -> None:
@@ -752,28 +814,50 @@ class LeRobotStreamingWriter:
         self._provenance = state["provenance"]
         self._samples = state.get("samples", {})
         self._global_index = state["global_index"]
-        self._h, self._w = state["h"], state["w"]
+        keys = list(state.get("video_keys") or [state["video_key"]])
+        if keys != self.video_keys:
+            raise ValueError(
+                f"checkpoint cameras {keys} != writer cameras {self.video_keys}"
+            )
+        self._geoms = {k: tuple(v) for k, v in dict(state.get("geoms") or {}).items()}
+        self._h, self._w = state.get("h"), state.get("w")
+        if not self._geoms and self._h is not None and self._w is not None:
+            self._geoms = {self.video_key: (int(self._h), int(self._w))}
 
     def add_episode(self, ep: Episode) -> int:
         import pyarrow as pa
 
-        frames = _to_uint8_rgb(ep.frames)
-        n = int(frames.shape[0])
+        vmap = _episode_video_map(ep, default_key=self.video_key)
+        if set(vmap) != set(self.video_keys):
+            raise ValueError(
+                f"episode cameras {sorted(vmap)} != writer cameras {sorted(self.video_keys)}"
+            )
+        primary = _to_uint8_rgb(vmap[self.video_key])
+        n = int(primary.shape[0])
         if n == 0:
             raise ValueError("refusing to write a zero-frame episode")
-        h, w = int(frames.shape[1]), int(frames.shape[2])
-        if h % 2 or w % 2:
-            raise ValueError(
-                f"frame size {w}x{h} is not encodable: libx264/yuv420p needs even "
-                "width and height."
-            )
-        if self._h is None:
-            self._h, self._w = h, w
-        elif (h, w) != (self._h, self._w):
-            raise ValueError(
-                f"episode {len(self._rows)} is {w}x{h} but the dataset is {self._w}x{self._h}; "
-                "all episodes must share geometry"
-            )
+        for vk in self.video_keys:
+            frames = _to_uint8_rgb(vmap[vk])
+            if frames.shape[0] != n:
+                raise ValueError(
+                    f"camera {vk!r} has {frames.shape[0]} frames but primary has {n}"
+                )
+            h, w = int(frames.shape[1]), int(frames.shape[2])
+            if h % 2 or w % 2:
+                raise ValueError(
+                    f"frame size {w}x{h} for {vk!r} is not encodable: "
+                    "libx264/yuv420p needs even width and height."
+                )
+            if vk not in self._geoms:
+                self._geoms[vk] = (h, w)
+            elif self._geoms[vk] != (h, w):
+                eh, ew = self._geoms[vk]
+                raise ValueError(
+                    f"episode {len(self._rows)} camera {vk!r} is {w}x{h} but the "
+                    f"dataset is {ew}x{eh}; all episodes must share per-camera geometry"
+                )
+        self._h, self._w = self._geoms[self.video_key]
+
         if abs(float(ep.fps) - self.fps) > 1e-6:
             raise ValueError(f"episode fps {ep.fps} differs from the dataset fps {self.fps}")
         if (ep.state is not None) != (self.state_dim > 0):
@@ -791,9 +875,10 @@ class LeRobotStreamingWriter:
             self._tasks.append(ep.task)
         tindex = self._task_index[ep.task]
 
-        # video first (most likely to fail); one file per episode.
-        vpath = self.root / "videos" / self.video_key / "chunk-000" / f"file-{ei:03d}.mp4"
-        _encode_video(self._av, vpath, frames, self.fps, preset=self.video_preset)
+        for vk in self.video_keys:
+            frames = _to_uint8_rgb(vmap[vk])
+            vpath = self.root / "videos" / vk / "chunk-000" / f"file-{ei:03d}.mp4"
+            _encode_video(self._av, vpath, frames, self.fps, preset=self.video_preset)
 
         states = [
             list(map(float, ep.state[f])) if ep.state is not None else [0.0] * self.state_dim
@@ -816,10 +901,7 @@ class LeRobotStreamingWriter:
         dpath.parent.mkdir(parents=True, exist_ok=True)
         self._pq.write_table(table, dpath)
 
-        # Per-feature normalization stats (LeRobot needs these to train); also
-        # accumulate the reduced samples for the aggregate meta/stats.json.
-        ep_stats = self._episode_stats(frames, states, actions, n, ei)
-
+        ep_stats = self._episode_stats(vmap, states, actions, n, ei)
         row = {
             "episode_index": ei,
             "tasks": [ep.task],
@@ -828,25 +910,28 @@ class LeRobotStreamingWriter:
             "data/file_index": ei,
             "dataset_from_index": self._global_index,
             "dataset_to_index": self._global_index + n,
-            f"videos/{self.video_key}/chunk_index": 0,
-            f"videos/{self.video_key}/file_index": ei,
-            f"videos/{self.video_key}/from_timestamp": 0.0,
-            f"videos/{self.video_key}/to_timestamp": n / self.fps,
         }
+        for vk in self.video_keys:
+            row[f"videos/{vk}/chunk_index"] = 0
+            row[f"videos/{vk}/file_index"] = ei
+            row[f"videos/{vk}/from_timestamp"] = 0.0
+            row[f"videos/{vk}/to_timestamp"] = n / self.fps
         for feat, st in ep_stats.items():
             for sk, val in stats_to_lists(st).items():
                 row[f"stats/{feat}/{sk}"] = val
         self._rows.append(row)
-        reader_owned = {"episode_index", "source_dataset", "video_key"}
+        reader_owned = {"episode_index", "source_dataset", "video_key", "video_keys"}
         self._provenance.append({k: v for k, v in ep.metadata.items() if k not in reader_owned})
         self._global_index += n
         return ei
 
-    def _episode_stats(self, frames, states, actions, n, ei) -> dict:
+    def _episode_stats(self, vmap, states, actions, n, ei) -> dict:
         ep_stats: dict[str, dict] = {}
-        img = reduce_samples(frames, is_image=True, seed=ei)
-        ep_stats[self.video_key] = stats_from_samples(img, count=n, image_channels=int(frames.shape[-1]))
-        self._samples.setdefault(self.video_key, []).append(img)
+        for vk in self.video_keys:
+            frames = _to_uint8_rgb(vmap[vk])
+            img = reduce_samples(frames, is_image=True, seed=ei + hash(vk) % 997)
+            ep_stats[vk] = stats_from_samples(img, count=n, image_channels=int(frames.shape[-1]))
+            self._samples.setdefault(vk, []).append(img)
         if self.state_dim > 0:
             red = reduce_samples(np.asarray(states, dtype=np.float64), is_image=False)
             ep_stats["observation.state"] = stats_from_samples(red, count=n)
@@ -863,7 +948,7 @@ class LeRobotStreamingWriter:
         if not self._rows:
             raise ValueError("no episodes were written")
         info = _build_info(
-            video_key=self.video_key, h=self._h, w=self._w, state_dim=self.state_dim,
+            video_features=self._geoms, state_dim=self.state_dim,
             action_dim=self.action_dim, fps=self.fps, codec_note=self.codec_note,
             total_episodes=len(self._rows), total_frames=int(self._global_index),
             total_tasks=len(self._tasks),
@@ -877,12 +962,11 @@ class LeRobotStreamingWriter:
         self._pq.write_table(pa.table(ep_cols), epath)
         _write_tasks_parquet(self._pq, pa, self.root / "meta" / "tasks.parquet", self._tasks)
 
-        # Aggregate normalization stats over the whole dataset (LeRobot loads
-        # these from meta/stats.json to normalize during training).
         stats = {}
+        vset = set(self.video_keys)
         for feat, reds in self._samples.items():
             allr = np.concatenate(reds, axis=0)
-            channels = allr.shape[1] if feat == self.video_key else None
+            channels = allr.shape[1] if feat in vset else None
             st = stats_from_samples(allr, count=int(self._global_index), image_channels=channels)
             stats[feat] = stats_to_lists(st)
         (self.root / "meta" / "stats.json").write_text(json.dumps(stats, indent=1))

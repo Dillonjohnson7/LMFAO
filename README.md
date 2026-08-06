@@ -16,6 +16,10 @@ the camera a few centimeters, and the policy that looked great in the lab falls
 apart. LMFAO gets more out of the demos you already recorded — a more robust
 policy without more hours on the robot, a second camera rig, or a GPU.
 
+SO101 teleop and guided data collection live under [`so101/`](so101/README.md)
+(`./so101/rec` — ENTER / keep / redo with an episode counter). Record there, then
+augment with the CLI below.
+
 ## The CLI
 
 | command | what it does |

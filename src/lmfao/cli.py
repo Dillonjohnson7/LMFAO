@@ -42,7 +42,11 @@ from lmfao.datasets.lerobot import LeRobotStreamingWriter
 from lmfao.datasets.poses import assume_camera_track
 from lmfao.miniworld import MiniWorldConfig, default_intrinsics, look_at
 from lmfao.pipeline import AugmentationPipeline
-from lmfao.program import augment_episodes, generate_training_set, sweep_episodes
+from lmfao.program import (
+    generate_training_set,
+    iter_augment_episode,
+    iter_sweep_episode,
+)
 
 
 class CliError(Exception):
@@ -254,9 +258,25 @@ def _augment(args: argparse.Namespace) -> int:
         else:
             if not args.input:
                 raise CliError("--input <lerobot-dataset> is required (or use --demo)")
+            import json as _json
+
             import pyarrow.parquet as pq
 
-            from lmfao.datasets.lerobot import _episode_records
+            from lmfao.datasets.lerobot import _episode_records, _video_keys
+            _info = _json.loads((Path(args.input) / "meta" / "info.json").read_text())
+            _keys = _video_keys(_info)
+            _on_disk = [k for k in _keys if (Path(args.input) / "videos" / k).exists()]
+            if args.video_key is None and len(_on_disk) > 1:
+                print(
+                    f"multi-cam preserve-all: {[k.split('.')[-1] for k in _on_disk]} "
+                    f"({len(_on_disk)} streams)"
+                )
+            if args.write_video_key is not None and args.video_key is None and len(_on_disk) > 1:
+                raise CliError(
+                    "--write-video-key cannot be used with multi-cam preserve-all; "
+                    "pass --video-key <one> for single-stream rename, or omit "
+                    "--write-video-key to keep original camera names"
+                )
             recs = _episode_records(Path(args.input), pq)
             indices = [int(r["episode_index"]) for r in recs]
             if args.limit is not None:
@@ -308,17 +328,17 @@ def _augment(args: argparse.Namespace) -> int:
 
     # --- stream: one source at a time -> its variants -> checkpoint ---
     generate = (
-        (lambda ep, k: sweep_episodes(
-            [ep], payload, seed=args.seed, include_original=args.include_original, index_base=k))
+        (lambda ep, k: iter_sweep_episode(
+            ep, payload, seed=args.seed, include_original=args.include_original, source_index=k))
         if mode == "sweep"
-        else (lambda ep, k: augment_episodes(
-            [ep], payload, variants=args.variants, seed=args.seed,
-            include_original=args.include_original, index_base=k))
+        else (lambda ep, k: iter_augment_episode(
+            ep, payload, variants=args.variants, seed=args.seed,
+            include_original=args.include_original, source_index=k))
     )
     try:
         for k in range(start, n_source):
             ep = first if k == 0 else get_source(k)
-            for produced in generate(ep, k).episodes:
+            for produced in generate(ep, k):
                 writer.add_episode(produced)
             if resume:
                 _checkpoint(ckpt, sig, k + 1, writer)
@@ -343,11 +363,25 @@ def _augment(args: argparse.Namespace) -> int:
 
 
 def _new_writer(out: Path, args: argparse.Namespace, first: Episode) -> LeRobotStreamingWriter:
-    write_key = args.write_video_key or first.metadata.get("video_key") or "observation.images.augmented"
     state_dim = first.state.shape[1] if first.state is not None else 0
     action_dim = first.actions.shape[1] if first.actions is not None else 0
+    keys = first.video_keys
+    if not keys:
+        # Demo episodes may not stamp video_key; fall back to write/default name.
+        keys = [args.write_video_key or "observation.images.augmented"]
+    elif args.write_video_key is not None:
+        if len(keys) > 1:
+            raise CliError(
+                "--write-video-key is only valid for single-camera episodes"
+            )
+        keys = [args.write_video_key]
+        first.metadata["video_key"] = args.write_video_key
+    else:
+        # Ensure primary metadata matches the writer key list.
+        first.metadata.setdefault("video_key", keys[0])
+        first.metadata["video_keys"] = list(keys)
     return LeRobotStreamingWriter(
-        out, video_key=write_key, fps=first.fps, state_dim=state_dim, action_dim=action_dim,
+        out, video_keys=keys, fps=first.fps, state_dim=state_dim, action_dim=action_dim,
     )
 
 
@@ -388,6 +422,7 @@ def _truncate(ep: Episode, cap: int | None) -> Episode:
         fps=ep.fps, task=ep.task,
         camera_poses=None if ep.camera_poses is None else ep.camera_poses[:cap],
         intrinsics=ep.intrinsics, metadata=ep.metadata,
+        extra_videos={k: v[:cap] for k, v in ep.extra_videos.items()},
     )
 
 
