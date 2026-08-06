@@ -1,58 +1,17 @@
 #!/usr/bin/env bash
-# One scored trial, end to end: start pose -> gates -> rollout.
+# One trial, always recorded.
 #
-#   ./so101/trial                  # 135 s, stock, rerun off
-#   ./so101/trial 60               # shorter
-#   POLICY=lighting ./so101/trial  # another bucket
-#   DISPLAY_DATA=1 ./so101/trial   # watch it (JPEG); =raw for uncompressed
-#   SKIP_POSE=1 ./so101/trial      # rollout without re-homing the arm
+#   ./so101/trial                  # 90 s, stock
+#   ./so101/trial 45               # shorter
+#   POLICY=lighting ./so101/trial
+#   DISPLAY_DATA=1 ./so101/trial   # also stream to rerun
 #
-# One token, one confirmation, three stages -- this terminal splits long
-# multi-line pastes (so101/STATUS.md), and chaining these by hand is how a
-# stage gets silently skipped and a trial gets scored that should not have been.
-#
-# Stage 2 is a hard gate: if the scene, pose or policy is off-distribution the
-# rollout does NOT run. A trial from a drifted setup measures the setup.
+# This is a thin wrapper over ./so101/series with one episode. There used to be
+# a separate non-recording path here, and runs kept being lost to it: a trial
+# worth watching is a trial worth having on disk, so there is now one command
+# and it always saves.
 set -euo pipefail
 
 SO101_DIR="$(cd "$(dirname "$0")" && pwd)"
-# 135 s is v2's scored-run default, not a guess: the full sequence (reach,
-# descend, close, lift, carry, release) took ~33 s on the run that completed
-# it, and the close is retried several times before it seizes. A 20 s cap
-# ends the episode mid-attempt and scores a timeout as a failure.
-DUR="${1:-135}"
-POLICY_NAME="${POLICY:-stock}"
-
-B=$'\033[1m'; G=$'\033[32m'; R=$'\033[31m'; Y=$'\033[33m'; X=$'\033[0m'
-step() { echo; echo "${B}=== $1 ===${X}"; }
-
-echo "${B}TRIAL${X}  policy=${POLICY_NAME}  duration=${DUR}s  rerun=${DISPLAY_DATA:-0}"
-echo "The arm will move twice: once to the start pose, then under policy control."
-if [[ "${TRIAL_YES:-0}" != "1" ]]; then
-  read -r -p "Workspace clear? [y/N] " ok
-  [[ "$ok" == "y" || "$ok" == "Y" ]] || { echo "aborted"; exit 1; }
-fi
-
-if [[ "${SKIP_POSE:-0}" != "1" ]]; then
-  step "1/3  start pose"
-  # Not fatal on its own: goto_start exits 1 when it stops short, and the
-  # preflight gate below is what actually decides whether to roll.
-  "$SO101_DIR/eval_py" goto_start.py --yes || echo "${Y}goto_start did not converge — the gate decides${X}"
-else
-  step "1/3  start pose (skipped)"
-fi
-
-step "2/3  gates"
-if ! "$SO101_DIR/eval_py" preflight.py; then
-  echo
-  echo "${R}${B}TRIAL ABORTED${X} — gates failed, so the arm was not driven."
-  echo "Fix what is flagged above, or re-run. Nothing was scored."
-  exit 1
-fi
-
-step "3/3  rollout"
-TRIAL_YES=1 ROLLOUT_YES=1 POLICY="$POLICY_NAME" "$SO101_DIR/rollout" "$DUR"
-
-echo
-echo "${G}${B}TRIAL COMPLETE${X} — policy=${POLICY_NAME} ${DUR}s"
-echo "Score it now: grasp / transport / placement, plus any intervention."
+DUR="${1:-90}"
+exec env EPISODE_S="$DUR" "$SO101_DIR/series" 1

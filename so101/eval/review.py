@@ -1,29 +1,29 @@
 #!/usr/bin/env python
-"""Turn a recorded series into something reviewable, per episode.
+"""Score a recorded rollout series, episode by episode.
 
     python so101/eval/review.py so101/eval/run_recordings/<stamp>_<policy>
-    python so101/eval/review.py <dir> --episodes 0,3,7      # only these
-    python so101/eval/review.py <dir> --strip 8             # frames per strip
+    python so101/eval/review.py <dir> --strip 8
 
-For each episode it writes, beside the dataset:
+Writes beside the dataset:
 
-    review/
-      summary.md              one table: gripper, lift, travel, verdict hint
-      ep00/front.jpg          a contact sheet across the episode
-      ep00/wrist.jpg          the same moments from the wrist
-      ep00/trace.txt          gripper + joint numbers over time
+    review/summary.md          one row per episode + the success rate
+    review/ep00/front.jpg      contact sheet across the episode
+    review/ep00/trace.txt      joint + gripper numbers over time
 
-The contact sheets are ordinary images, so a person or an agent can look at
-them without a rerun viewer -- .rrd cannot be read back by the installed SDK,
-and a run nobody can review is one that gets scored from memory.
+Reads the parquet and the video files directly rather than going through
+LeRobotDataset: a run whose episode finalisation did not complete leaves
+meta/info.json saying 0 episodes while all 1891 frames and both videos are
+perfectly intact, and that run still needs scoring.
 
-The numbers are hints, never a verdict. The demos carry the puck at a known
-grip band, so a close that lands far below it is the "closed on air" signature
-from CHECKPOINT.md; but only the pictures show whether the puck actually
-reached the box.
+The verdict combines two measured signals, both calibrated against the demos:
+  * how long the gripper holds inside the demos' carry band, and
+  * whether the puck actually moved from where it started.
+A failed attempt still closes the jaws, so grip alone is not enough -- the
+63 s failure held 2.6 s in-band while never shifting the puck at all.
 """
 from __future__ import annotations
 
+import glob
 import json
 import os
 import sys
@@ -31,179 +31,160 @@ from pathlib import Path
 
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 import av
+import cv2
 import numpy as np
+import pyarrow.parquet as pq
 
 
-def parse_args(argv: list[str]) -> tuple[Path, list[int] | None, int]:
-    if len(argv) < 2:
-        sys.exit(__doc__)
-    root = Path(argv[1]).expanduser().resolve()
-    eps, strip = None, 8
-    if "--episodes" in argv:
-        eps = [int(x) for x in argv[argv.index("--episodes") + 1].split(",")]
-    if "--strip" in argv:
-        strip = int(argv[argv.index("--strip") + 1])
-    return root, eps, strip
+def find_puck(bgr, lo=(95, 70, 40), hi=(135, 255, 255)):
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    m = cv2.inRange(hsv, lo, hi)
+    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
+    cs, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    best = None
+    for c in cs:
+        a = cv2.contourArea(c)
+        if a < 60:
+            continue
+        (x, y), r = cv2.minEnclosingCircle(c)
+        if r <= 0 or a / (np.pi * r * r) < 0.55:
+            continue
+        if best is None or a > best[0]:
+            best = (a, x, y, r)
+    return None if best is None else (best[1], best[2], best[3])
 
 
-def episode_frames(video: Path, want: list[int]) -> dict[int, np.ndarray]:
-    """Decode only the wanted frame indices, sequentially (no seeking)."""
-    out, want_set = {}, set(want)
-    with av.open(str(video)) as c:
-        for i, fr in enumerate(c.decode(c.streams.video[0])):
-            if i in want_set:
-                out[i] = fr.to_ndarray(format="bgr24")
-                if len(out) == len(want_set):
-                    break
-    return out
-
-
-def contact_sheet(frames: list[np.ndarray], labels: list[str]) -> np.ndarray:
-    import cv2
-
-    h = 240
-    tiles = []
-    for f, lab in zip(frames, labels, strict=False):
-        t = cv2.resize(f, (int(f.shape[1] * h / f.shape[0]), h))
-        cv2.rectangle(t, (0, 0), (t.shape[1] - 1, 18), (0, 0, 0), -1)
-        cv2.putText(t, lab, (4, 13), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
-        tiles.append(t)
-    per_row = 4
-    rows = []
-    for i in range(0, len(tiles), per_row):
-        row = tiles[i:i + per_row]
-        while len(row) < per_row:
-            row.append(np.zeros_like(tiles[0]))
-        rows.append(np.hstack(row))
-    return np.vstack(rows)
+def carry_band(demo_root: Path, gi: int) -> tuple[float, float] | None:
+    """The grip plateau the demos hold while carrying (they open ~39 first, so
+    peak grip is the approach, not the hold)."""
+    holds = []
+    for f in sorted(glob.glob(str(demo_root / "data" / "**" / "*.parquet"), recursive=True)):
+        t = pq.read_table(f).to_pandas()
+        if "observation.state" not in t or "episode_index" not in t:
+            continue
+        for _e, g in t.groupby("episode_index"):
+            a = np.stack(g.sort_values("frame_index")["observation.state"].to_numpy())[:, gi]
+            lo, hi = int(0.5 * len(a)), int(0.9 * len(a))
+            if hi > lo:
+                holds.append(float(np.median(a[lo:hi])))
+    if not holds:
+        return None
+    h = np.array(holds)
+    return float(h.mean() - 3 * h.std()), float(h.mean() + 3 * h.std())
 
 
 def main() -> None:
-    import cv2
-    import pyarrow.parquet as pq
-    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+    if len(sys.argv) < 2:
+        sys.exit(__doc__)
+    root = Path(sys.argv[1]).expanduser().resolve()
+    strip_n = int(sys.argv[sys.argv.index("--strip") + 1]) if "--strip" in sys.argv else 8
+    so101 = Path(__file__).resolve().parents[1]
+    demo_root = Path(os.environ.get("DEMO_ROOT", so101 / "datasets" / "pick_place_v3"))
 
-    root, only, strip_n = parse_args(sys.argv)
-    if not (root / "meta" / "info.json").exists():
-        sys.exit(f"not a LeRobot dataset: {root}")
     info = json.loads((root / "meta" / "info.json").read_text())
     fps = float(info.get("fps", 30))
-    names = [str(n).removesuffix(".pos")
-             for n in info["features"]["observation.state"].get("names") or []]
-    gi = next((i for i, n in enumerate(names) if "gripper" in n), None)
+    names = [str(n).removesuffix(".pos") for n in info["features"]["observation.state"]["names"]]
+    gi = names.index("gripper")
+    band = carry_band(demo_root, gi)
+    if band is None:
+        sys.exit("could not measure the demos' carry band — set DEMO_ROOT")
 
-    ds = LeRobotDataset(f"local/{root.name}", root=str(root), video_backend="pyav")
-    epi = ds.meta.episodes
-    n_eps = ds.num_episodes
-    todo = list(range(n_eps)) if only is None else [e for e in only if e < n_eps]
+    # Frames, in recorded order, straight from the parquet.
+    parts = [pq.read_table(f).to_pandas()
+             for f in sorted(glob.glob(str(root / "data" / "**" / "*.parquet"), recursive=True))]
+    if not parts:
+        sys.exit(f"no data parquet under {root}")
+    import pandas as pd
+    t = pd.concat(parts, ignore_index=True)
+    st = np.stack(t["observation.state"].to_numpy())
+    ep_of = t["episode_index"].to_numpy() if "episode_index" in t else np.zeros(len(t), int)
 
-    # What a real carry looks like, measured from the demos rather than assumed.
-    # A demo opens the jaws (~39), closes onto the puck and HOLDS a plateau
-    # (~29.6) while carrying, then opens to release. So the signal is a
-    # sustained grip inside that plateau -- not the peak, which is just the
-    # open-to-approach and would call a successful demo a failure.
-    # Walk up looking for the demos rather than assuming a fixed depth: a wrong
-    # guess previously left grip_band None and the hints were emitted anyway,
-    # calling successful demos "jaws never opened". Silence beats a wrong verdict.
-    demo_root = None
-    if os.environ.get("DEMO_ROOT"):
-        demo_root = Path(os.environ["DEMO_ROOT"])
-    else:
-        for base in [root, *root.parents]:
-            cand = base / "datasets" / "pick_place_v3"
-            if (cand / "meta" / "info.json").exists():
-                demo_root = cand
-                break
-    grip_band = None
-    if gi is not None and demo_root and (demo_root / "meta" / "info.json").exists():
-        import glob
-        holds = []
-        for f in sorted(glob.glob(str(demo_root / "data" / "**" / "*.parquet"), recursive=True)):
-            t = pq.read_table(f).to_pandas()
-            if "observation.state" not in t or "episode_index" not in t:
-                continue
-            for _e, g in t.groupby("episode_index"):
-                arr = np.stack(g.sort_values("frame_index")["observation.state"].to_numpy())[:, gi]
-                lo_i, hi_i = int(0.5 * len(arr)), int(0.9 * len(arr))
-                if hi_i > lo_i:
-                    holds.append(float(np.median(arr[lo_i:hi_i])))
-        if holds:
-            h = np.array(holds)
-            grip_band = (float(h.mean() - 3 * h.std()), float(h.mean() + 3 * h.std()))
+    # Video decoded sequentially in file order; frame i lines up with row i.
+    vids = sorted(glob.glob(str(root / "videos" / "observation.images.front" / "**" / "*.mp4"),
+                            recursive=True))
+    frames = []
+    for v in vids:
+        with av.open(v) as c:
+            frames.extend(f.to_ndarray(format="bgr24") for f in c.decode(c.streams.video[0]))
+    if len(frames) < len(t):
+        print(f"  (note: {len(frames)} video frames vs {len(t)} rows — using the shorter)")
 
-    out_root = root / "review"
-    out_root.mkdir(exist_ok=True)
+    out = root / "review"
+    out.mkdir(exist_ok=True)
     rows = []
-    for ep in todo:
-        fr = int(epi["dataset_from_index"][ep]); to = int(epi["dataset_to_index"][ep])
-        L = to - fr
-        idx = np.linspace(0, L - 1, strip_n).astype(int)
-
-        states = np.stack([ds[fr + int(i)]["observation.state"].numpy() for i in range(L)])
-        grip = states[:, gi] if gi is not None else np.zeros(L)
-        gmax = float(grip.max())
-        travel = float(np.abs(states[:, :5] - states[0, :5]).max())
-
-        # Longest stretch held inside the demos' carry band, in seconds.
-        held_s = 0.0
-        if grip_band:
-            inb = (grip >= grip_band[0]) & (grip <= grip_band[1])
-            run = best = 0
-            for v in inb:
-                run = run + 1 if v else 0
-                best = max(best, run)
-            held_s = best / fps
-
-        epdir = out_root / f"ep{ep:02d}"
-        epdir.mkdir(exist_ok=True)
-        for cam in ("front", "wrist"):
-            key = f"observation.images.{cam}"
-            if key not in info["features"]:
-                continue
-            frames, labs = [], []
-            for i in idx:
-                im = ds[fr + int(i)][key]
-                frames.append((im.permute(1, 2, 0).numpy() * 255).astype(np.uint8)[:, :, ::-1])
-                labs.append(f"{i/fps:5.1f}s")
-            if frames:
-                cv2.imwrite(str(epdir / f"{cam}.jpg"), contact_sheet(frames, labs))
-
-        with (epdir / "trace.txt").open("w") as fh:
-            fh.write(f"episode {ep}  {L} frames  {L/fps:.1f}s\n")
-            fh.write(f"{'t(s)':>7}" + "".join(f"{n:>14}" for n in names) + "\n")
-            for i in range(0, L, max(1, L // 40)):
-                fh.write(f"{i/fps:>7.1f}" + "".join(f"{v:>14.1f}" for v in states[i]) + "\n")
-
-        if grip_band is None:
-            hint = "NO REFERENCE — set DEMO_ROOT to the demos; hints suppressed"
-            rows.append((ep, L / fps, gmax, held_s, travel, hint))
+    for ep in sorted(set(ep_of.tolist())):
+        sel = np.where(ep_of == ep)[0]
+        sel = sel[sel < len(frames)]
+        if len(sel) == 0:
             continue
-        opened = gmax >= grip_band[1]
-        if held_s >= 1.0:
-            hint = f"held {held_s:.1f}s in the carry band"
-        elif not opened:
-            hint = "jaws never opened to approach"
-        elif float(grip[len(grip) // 2:].min()) < (grip_band[0] * 0.4 if grip_band else 8):
-            hint = "opened then shut past the band - 'closed on air'"
+        g = st[sel, gi]
+        inb = (g >= band[0]) & (g <= band[1])
+        run = best = 0
+        for v in inb:
+            run = run + 1 if v else 0
+            best = max(best, run)
+        held = best / fps
+
+        p0 = find_puck(frames[sel[0]])
+        p1 = find_puck(frames[sel[-1]])
+        moved_px = float(np.hypot(p1[0] - p0[0], p1[1] - p0[1])) if (p0 and p1) else None
+        px_cm = (p0[2] / 3.5) if p0 else 7.1
+        moved_cm = moved_px / px_cm if moved_px is not None else None
+
+        # A real place both holds the puck and relocates it. A peck-and-retry
+        # closes the jaws briefly and leaves the puck exactly where it started.
+        if moved_cm is None:
+            verdict = "puck not visible - review the sheet"
+        elif held >= 3.0 and moved_cm >= 5.0:
+            verdict = "SUCCESS - carried and placed"
+        elif moved_cm >= 5.0:
+            verdict = "moved the puck, brief hold - check the sheet"
+        elif held >= 3.0:
+            verdict = "held but did not relocate it"
         else:
-            hint = "opened, no sustained hold"
-        rows.append((ep, L / fps, gmax, held_s, travel, hint))
+            verdict = "FAIL - never secured the puck"
 
-    with (out_root / "summary.md").open("w") as fh:
+        d = out / f"ep{ep:02d}"
+        d.mkdir(exist_ok=True)
+        idx = sel[np.linspace(0, len(sel) - 1, strip_n).astype(int)]
+        tiles = []
+        for i in idx:
+            im = cv2.resize(frames[i], (320, 240))
+            cv2.rectangle(im, (0, 0), (319, 18), (0, 0, 0), -1)
+            cv2.putText(im, f"{(i-sel[0])/fps:5.1f}s", (4, 13),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+            tiles.append(im)
+        per = 4
+        grid = [np.hstack(tiles[i:i + per]) for i in range(0, len(tiles), per)]
+        if len(grid[-1].shape) and grid[-1].shape[1] < grid[0].shape[1]:
+            pad = np.zeros((240, grid[0].shape[1] - grid[-1].shape[1], 3), np.uint8)
+            grid[-1] = np.hstack([grid[-1], pad])
+        cv2.imwrite(str(d / "front.jpg"), np.vstack(grid))
+
+        with (d / "trace.txt").open("w") as fh:
+            fh.write(f"episode {ep}  {len(sel)} frames  {len(sel)/fps:.1f}s\n")
+            fh.write(f"{'t(s)':>7}" + "".join(f"{n:>14}" for n in names) + "\n")
+            for k in range(0, len(sel), max(1, len(sel) // 40)):
+                fh.write(f"{k/fps:>7.1f}" + "".join(f"{v:>14.1f}" for v in st[sel[k]]) + "\n")
+
+        rows.append((ep, len(sel) / fps, held, moved_cm, verdict))
+
+    ok = sum(1 for r in rows if r[4].startswith("SUCCESS"))
+    with (out / "summary.md").open("w") as fh:
         fh.write(f"# {root.name}\n\n")
-        if grip_band:
-            fh.write(f"Demo carry-grip band: {grip_band[0]:.1f}-{grip_band[1]:.1f} "
-                     f"(from {demo_root.name})\n\n")
-        fh.write("| ep | len | peak grip | held in band | joint travel | hint |\n")
-        fh.write("|---:|----:|----------:|-------------:|-------------:|------|\n")
-        for ep, sec, g, hs, tr, hint in rows:
-            fh.write(f"| {ep} | {sec:.0f}s | {g:.1f} | {hs:.1f}s | {tr:.0f} deg | {hint} |\n")
-        fh.write("\nHints are signals, not verdicts — the contact sheets show whether the "
-                 "puck reached the box.\n")
+        fh.write(f"Demo carry band {band[0]:.1f}-{band[1]:.1f} · "
+                 f"**{ok}/{len(rows)} success**\n\n")
+        fh.write("| ep | len | held in band | puck moved | verdict |\n|---:|---:|---:|---:|---|\n")
+        for ep, sec, held, mv, v in rows:
+            fh.write(f"| {ep} | {sec:.0f}s | {held:.1f}s | "
+                     f"{'n/a' if mv is None else f'{mv:.1f} cm'} | {v} |\n")
 
-    print(f"review written: {out_root}")
-    for ep, sec, g, hs, tr, hint in rows:
-        print(f"  ep{ep:02d}  {sec:5.1f}s  peak {g:5.1f}  held {hs:4.1f}s  travel {tr:4.0f} deg   {hint}")
+    print(f"\n  {'ep':>3} {'len':>7} {'held':>7} {'moved':>9}   verdict")
+    for ep, sec, held, mv, v in rows:
+        print(f"  {ep:>3} {sec:>6.0f}s {held:>6.1f}s "
+              f"{('n/a' if mv is None else f'{mv:.1f} cm'):>9}   {v}")
+    print(f"\n  {ok}/{len(rows)} success        {out}/summary.md")
 
 
 if __name__ == "__main__":

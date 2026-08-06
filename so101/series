@@ -46,10 +46,15 @@ FPS="${FPS:-30}"
 PORT="${FOLLOWER_PORT:-/dev/so101_follower}"
 
 case "${DISPLAY_DATA:-0}" in
-  raw|RAW)     DISPLAY_DATA=true;  COMPRESS=false ;;
-  1|true|jpeg) DISPLAY_DATA=true;  COMPRESS=true  ;;
+  1|true|raw|RAW) DISPLAY_DATA=true;  COMPRESS=false ;;
+  jpeg)           DISPLAY_DATA=true;  COMPRESS=true  ;;   # black frames: images are float here, JPEG needs uint8
   *)           DISPLAY_DATA=false; COMPRESS=true  ;;
 esac
+# Rerun defaults to 8 KB flush batches, which against 3.6 MB frames means a
+# flush per frame and backpressure onto the control loop ("Sender has been
+# blocked waiting for space in channel"). Batch bigger and give it headroom.
+export RERUN_FLUSH_NUM_BYTES="${RERUN_FLUSH_NUM_BYTES:-33554432}"
+export LEROBOT_RERUN_MEMORY_LIMIT="${LEROBOT_RERUN_MEMORY_LIMIT:-25%}"
 
 B=$'\033[1m'; G=$'\033[32m'; R=$'\033[31m'; X=$'\033[0m'
 
@@ -101,7 +106,7 @@ lerobot-rollout \
   --fps="$FPS" \
   --display_data="$DISPLAY_DATA" \
   --display_compressed_images="$COMPRESS" \
-  --dataset.repo_id="local/eval_${POLICY_NAME}_${STAMP}" \
+  --dataset.repo_id="local/rollout_${POLICY_NAME}_${STAMP}" \
   --dataset.root="$OUT" \
   --dataset.single_task="$TASK" \
   --dataset.num_episodes="$N" \
