@@ -55,6 +55,21 @@ def find_puck(bgr, lo=(95, 70, 40), hi=(135, 255, 255)):
     return None if best is None else (best[1], best[2], best[3])
 
 
+def box_zone(demo_root: Path, frames_of):
+    """Where the puck ends up in the demos IS the box, so measure it instead of
+    hardcoding a rectangle that would rot the moment the box is nudged."""
+    pts = []
+    for im in frames_of:
+        p = find_puck(im)
+        if p:
+            pts.append((p[0], p[1]))
+    if len(pts) < 5:
+        return None
+    P = np.array(pts)
+    mx, my, sx, sy = P[:, 0].mean(), P[:, 1].mean(), P[:, 0].std(), P[:, 1].std()
+    return (mx - 3 * sx, mx + 3 * sx, my - 3 * sy, my + 3 * sy)
+
+
 def carry_band(demo_root: Path, gi: int) -> tuple[float, float] | None:
     """The grip plateau the demos hold while carrying (they open ~39 first, so
     peak grip is the approach, not the hold)."""
@@ -89,6 +104,21 @@ def main() -> None:
     band = carry_band(demo_root, gi)
     if band is None:
         sys.exit("could not measure the demos' carry band — set DEMO_ROOT")
+
+    # The demos all end with the puck in the box, so their final puck positions
+    # define the target zone.
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+    dd = LeRobotDataset(f"local/{demo_root.name}", root=str(demo_root), video_backend="pyav")
+    de = dd.meta.episodes
+    ends = []
+    for ep in range(dd.num_episodes):
+        to = int(de["dataset_to_index"][ep])
+        for back in (3, 10, 25):
+            im = dd[to - back]["observation.images.front"]
+            ends.append((im.permute(1, 2, 0).numpy() * 255).astype(np.uint8)[:, :, ::-1].copy())
+            break
+    BOX = box_zone(demo_root, ends)
+    del dd
 
     # Frames, in recorded order, straight from the parquet.
     parts = [pq.read_table(f).to_pandas()
@@ -126,6 +156,17 @@ def main() -> None:
             best = max(best, run)
         held = best / fps
 
+        # Did the puck ever reach the box? That is the task, and it survives the
+        # policy picking it back out afterwards -- which it does, having no idea
+        # it has finished.
+        in_box = False
+        if BOX:
+            for i in sel[::15]:
+                q = find_puck(frames[i])
+                if q and BOX[0] <= q[0] <= BOX[1] and BOX[2] <= q[1] <= BOX[3]:
+                    in_box = True
+                    break
+
         p0 = find_puck(frames[sel[0]])
         p1 = find_puck(frames[sel[-1]])
         moved_px = float(np.hypot(p1[0] - p0[0], p1[1] - p0[1])) if (p0 and p1) else None
@@ -134,7 +175,9 @@ def main() -> None:
 
         # A real place both holds the puck and relocates it. A peck-and-retry
         # closes the jaws briefly and leaves the puck exactly where it started.
-        if moved_cm is None and held < 3.0:
+        if BOX:
+            verdict = "SUCCESS - puck reached the box" if in_box else "FAIL - puck never reached the box"
+        elif moved_cm is None and held < 3.0:
             # Arm parked over the puck hides it, but a run that never held the
             # puck did not place it either -- no need to defer that one.
             verdict = "FAIL - never secured the puck (puck hidden at end)"
