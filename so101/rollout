@@ -83,9 +83,15 @@ WRIST="$(readlink -f "$(cat "$SO101_DIR/wrist_cam.path")")"
 [[ -e "$WRIST" ]] || { echo "wrist cam $WRIST missing — re-pin with cam_check.py --find" >&2; exit 1; }
 [[ "$FRONT" != "$WRIST" ]] || { echo "front and wrist resolve to the same device" >&2; exit 1; }
 
+# warmup_s=4, not LeRobot's default 1. The RealSense front cam needs ~3 s for
+# auto-exposure/white-balance to converge: measured B/R 0.518 -> 0.892 and
+# brightness 38 -> 112 over the first 3 s, against demos at B/R 0.910+/-0.012
+# and brightness 113.0+/-1.5. At warmup_s=1 the policy's FIRST observation is
+# ~20 sigma off the training distribution -- and ACT plans a whole 100-action
+# chunk (3.3 s of motion) from it. See CHECKPOINT.md's pre-rollout scene gate.
 CAMERAS="{ \
-front: {type: opencv, index_or_path: ${FRONT}, width: 640, height: 480, fps: 30, fourcc: MJPG}, \
-wrist: {type: opencv, index_or_path: ${WRIST}, width: 1280, height: 720, fps: 30, fourcc: MJPG} \
+front: {type: opencv, index_or_path: ${FRONT}, width: 640, height: 480, fps: 30, fourcc: MJPG, warmup_s: 4}, \
+wrist: {type: opencv, index_or_path: ${WRIST}, width: 1280, height: 720, fps: 30, fourcc: MJPG, warmup_s: 4} \
 }"
 
 echo "policy   : $POLICY_NAME  ($POLICY_PATH)"
