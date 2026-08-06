@@ -19,9 +19,12 @@ Same ACT hyperparameters and seed across buckets. The only variable is the datas
 
 Configs live under `configs/training/buckets/`. Scripts:
 
-1. `scripts/record_demos.sh` — teleop on the SO101 workstation
+1. `scripts/record_demos.sh` / `so101/rec` — guided teleop on the SO101 workstation
 2. `scripts/augment_eval_buckets.sh` — build each bucket with `lmfao augment`
 3. `scripts/train_eval_buckets.sh` — one ACT checkpoint per bucket (CUDA pod)
+
+Workcell tooling lives under [`so101/`](../so101/README.md) (from
+`MultiplyLabor/SO101_policy`: guided recorder, camera pin, teleop, review).
 
 ## 1. Recollect new demos (robot workstation)
 
@@ -29,28 +32,24 @@ Do **not** reuse `Dillonjohnson/pick_place_v2` for this eval — that set was fo
 building/smoke-testing LMFAO. Record a new session under a controlled layout.
 
 ```bash
-# On the SO101 machine, after calibration + hf auth login:
-FOLLOWER_PORT=/dev/ttyACM0 \
-LEADER_PORT=/dev/ttyACM1 \
-HF_USER=Dillonjohnson \
-DATASET_NAME=pick_place_v3 \
-NUM_EPISODES=50 \
-TASK="pick the cube and place it in the bin" \
-./scripts/record_demos.sh
+# On the SO101 machine (LeRobot 0.6.x env; NUC: LEROBOT_VENV=/home/multiply/envs/lerobot06):
+# one-time: ./so101/setup.sh
+# one-time cams: python so101/eval/cam_check.py --find-front && python so101/eval/cam_check.py --find
+./scripts/record_demos.sh 40
+# same as: ./so101/rec 40
 ```
 
 Protocol:
 
 - Fix lighting, camera mounting, and table scene for the whole session.
-- Prefer slow, consistent teleop; redo bad episodes.
+- Prefer slow, consistent teleop; at STEP 3 press ENTER to keep or `r` to redo.
 - Optional: append a ~30s slow scene sweep after task episodes (future GENERATE
   hygiene; not required for ADJUST).
-- Keep the camera set identical for record / train / rollout (wrist-only by
-  default in the script).
+- Keep the camera set identical for record / train / rollout (front+wrist by
+  default; `WRIST=0` for front-only).
 
-Local LeRobot path is typically
-`~/.cache/huggingface/lerobot/${HF_USER}/${DATASET_NAME}`. Point `STOCK` at that
-root (or a copy on a fast disk).
+Default dataset root: `so101/datasets/pick_place_v3`. Point `STOCK` at that
+path (or a copy on a fast disk).
 
 ## 2. Augment with the CLI
 

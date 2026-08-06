@@ -76,6 +76,11 @@ If that key is rejected, its public half must be added to the stock pod's
 `/root/.ssh/authorized_keys`. Never copy the private key into this repository
 or paste it into documentation.
 
+On 2026-08-06, the NUC transfer public key was added to the stock pod and a
+NUC-to-RunPod check returned `NUC_ACCESS_OK`. The private key remained on the
+NUC. This authorization is container-local and may need to be repeated after a
+future stock-pod restart.
+
 Validate the download:
 
 ```bash
@@ -729,14 +734,18 @@ versions can break APIs used by LeRobot.
 
 ## 12. Current run status snapshot
 
-Snapshot taken around 2026-08-06 15:17 America/New_York:
+Snapshot taken around 2026-08-06 16:07 America/New_York:
 
-- `stock`: complete at 100,000/100,000.
-- `spatial`: training; latest nearby observation was 27,085/100,000.
-- `occlusion`: training; latest nearby observation was 22,023/100,000.
-- `full`: training; measured at approximately 6.45 steps/second.
-- `lighting`: re-encoding; latest nearby observation was 695/720.
-- `noise`: re-encoding; latest nearby observation was 557/720.
+- `stock`: complete at 100,000/100,000; final checkpoint validated and uploaded
+  to its private Hugging Face repository.
+- `spatial`: approximately 44,670/100,000 at 6.4 steps/second.
+- `occlusion`: approximately 39,058/100,000 at 6.2 steps/second.
+- `full`: approximately 17,399/100,000 at 6.3 steps/second.
+- `lighting`: approximately 2,854/100,000 at 1.9–2.0 steps/second. Low-GOP
+  encoding is complete, but this bucket remains video-decode/storage bound.
+- `noise`: low-GOP re-encoding complete at 720/720; dataset and CUDA validation
+  passed; fresh 100,000-step training launched and still initializing at this
+  snapshot.
 
 These counters are a time-stamped snapshot, not a live status API. Read the
 current pod logs before making billing or shutdown decisions.
@@ -761,6 +770,56 @@ Logs and markers:
 /workspace/runs/eval_buckets/BUCKET.done
 /workspace/runs/eval_buckets/BUCKET.failed
 ```
+
+### 12.1 Hugging Face policy retention
+
+All six policies now have separate private Hugging Face model repositories
+grouped in one private v3 collection:
+
+```text
+Collection:
+https://huggingface.co/collections/Dillonjohnson/so101-pick-place-v3-act-policies-6a74e56a093a15c8acc55786
+
+Repositories:
+Dillonjohnson/pick_place_v3_act_stock
+Dillonjohnson/pick_place_v3_act_lighting
+Dillonjohnson/pick_place_v3_act_noise
+Dillonjohnson/pick_place_v3_act_occlusion
+Dillonjohnson/pick_place_v3_act_spatial
+Dillonjohnson/pick_place_v3_act_full
+```
+
+The repositories are separate because Hugging Face does not support a nested
+owner/repository path such as `Dillonjohnson/v3/stock`. A private collection is
+the folder-like grouping while keeping every repository directly usable as a
+LeRobot `--policy.path`.
+
+The deployable files live at each repository root—not under an additional
+checkpoint subdirectory—so LeRobot can resolve the repository directly. The
+source datasets, logs, intermediate checkpoints, credentials, and private keys
+are not uploaded.
+
+Stock was uploaded and verified:
+
+```text
+repository:  Dillonjohnson/pick_place_v3_act_stock
+remote files: 9
+model size:   206,699,768 bytes
+model SHA-256:
+6718be1a97c1b644884d7038ee0d3cc611ae445a69cedd815506dc1e2ed68e0b
+```
+
+A combined two-minute monitor now:
+
+1. watches all remaining training runs
+2. validates each final 100,000-step `pretrained_model`
+3. uploads only the complete deployable folder
+4. updates the model card from reserved to completed
+5. verifies required remote files, model size, and LFS SHA-256
+6. stops after all six repositories verify
+
+The Hugging Face token is passed to an upload process only in memory. It is not
+saved on the RunPod machines.
 
 ## 13. Significant failures, mistakes, and recovery
 
@@ -846,6 +905,29 @@ Recovery:
 Lesson: prepare and validate a reusable RunPod image or persistent environment
 before provisioning all training pods.
 
+### Lighting and noise runtimes also broke after rename
+
+The lighting and noise `/workspace/v312` virtual environments survived, but
+their Python executable symlinks still targeted an ephemeral runtime under
+`/root/.local/share/uv/python`. Re-encoding could run under system Python, so
+this breakage was not visible until training validation.
+
+Recovery copied only the known-working 110 MB Python 3.12.13 runtime from the
+full pod to each affected `/workspace` volume and recreated the expected
+symlink. No runtime or dataset was stored on the Mac.
+
+### More workers did not fix lighting throughput
+
+Lighting initially measured about 1.76 steps/second with four saturated loader
+workers and low GPU utilization. It was restarted early with 16 workers and
+prefetch factor 1, avoiding the previous high-prefetch OOM configuration, but
+throughput remained about 1.9–2.3 steps/second.
+
+Lighting and spatial have the same approximately 17.85-core CPU quota.
+Therefore the remaining lighting slowdown is not a missing-worker or pod CPU
+allocation problem. It is specific to lighting video decoding/storage; blindly
+increasing workers again is not an appropriate fix.
+
 ### Monitoring loops became noisy
 
 Old transfer and stock monitors continued emitting ticks after their work was
@@ -919,6 +1001,10 @@ du -sh /workspace/runs/eval_buckets/BUCKET/checkpoints/last/pretrained_model
 
 Copy the whole `pretrained_model` directory to durable storage. Then verify it
 can be loaded on the destination before deleting the pod.
+
+For this run, durable storage means the matching private Hugging Face model
+repository. Verify the required files and LFS SHA-256 remotely before stopping
+the pod.
 
 Keep names aligned:
 
@@ -1005,7 +1091,9 @@ The training phase is complete when:
 
 - all six policies reach 100,000 steps
 - each has a valid `checkpoints/last/pretrained_model`
-- each artifact is copied to durable storage
+- each artifact is uploaded to its matching private Hugging Face repository
+- each repository contains the complete deployable root file structure
+- model size and LFS SHA-256 are verified
 - each artifact loads successfully
 
 The experiment is complete when:

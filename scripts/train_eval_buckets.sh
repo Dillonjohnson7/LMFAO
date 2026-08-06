@@ -32,6 +32,8 @@ fi
 
 mkdir -p "$RUNS_ROOT"
 
+# Validate the whole batch before starting any policy. LeRobot requires each
+# output_dir to not exist when resume=false; pre-creating it makes training fail.
 for bucket in $BUCKETS; do
   ds="${OUT_ROOT}/${bucket}"
   run="${RUNS_ROOT}/${bucket}"
@@ -39,7 +41,16 @@ for bucket in $BUCKETS; do
     echo "missing bucket dataset: ${ds} (run scripts/augment_eval_buckets.sh first)" >&2
     exit 1
   fi
-  mkdir -p "$run"
+  if [[ -e "$run" ]]; then
+    echo "training output already exists: ${run}" >&2
+    echo "choose a fresh RUNS_ROOT or move/remove that bucket explicitly" >&2
+    exit 1
+  fi
+done
+
+for bucket in $BUCKETS; do
+  ds="${OUT_ROOT}/${bucket}"
+  run="${RUNS_ROOT}/${bucket}"
   echo
   echo "=== train bucket=${bucket} steps=${STEPS} ==="
   "$LEROBOT_BIN" \

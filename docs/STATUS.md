@@ -87,7 +87,7 @@ job.json export in `web/`.
 ### Canonical data
 - **Dev / smoke dataset:** HF `Dillonjohnson/pick_place_v2` (SO101 / `so_follower`,
   wrist camera) — used to build and prove LMFAO's LeRobot export + ACT load.
-- **Eval dataset:** a **newly recorded** session (see `scripts/record_demos.sh` /
+- **Eval dataset:** a **newly recorded** session (see `so101/rec` / `scripts/record_demos.sh` /
   `docs/TRAINING_RUN.md`). Do not treat `pick_place_v2` as the comparative-eval
   training set. Never the old Downloads teleop folder.
 
@@ -185,7 +185,7 @@ on every fresh clone, run `python3 -m pre_commit install` before the first commi
 Everything is proven at smoke scale. The next experiment is **not** reusing
 `pick_place_v2` — it is:
 
-1. **Recollect** fresh SO101 demos (`scripts/record_demos.sh` on the robot box)
+1. **Recollect** fresh SO101 demos (`so101/rec` / `scripts/record_demos.sh` on the robot box)
 2. **Augment** with the CLI into matched buckets (stock / lighting / noise /
    occlusion / spatial / full) via `scripts/augment_eval_buckets.sh`
 3. **Train** one ACT policy per bucket with identical hparams

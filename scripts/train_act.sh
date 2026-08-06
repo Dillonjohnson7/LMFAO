@@ -27,8 +27,13 @@ if [[ "$POLICY_DEVICE" == "cuda" ]] && ! command -v nvidia-smi >/dev/null 2>&1; 
   echo "POLICY_DEVICE=cuda but nvidia-smi is missing — run on a CUDA pod" >&2
   exit 1
 fi
+if [[ -e "$OUTPUT_DIR" ]]; then
+  echo "training output already exists: ${OUTPUT_DIR}" >&2
+  echo "choose a fresh OUTPUT_DIR or move/remove it explicitly" >&2
+  exit 1
+fi
 
-mkdir -p "$OUTPUT_DIR"
+mkdir -p "$(dirname "$OUTPUT_DIR")"
 exec "$LEROBOT_BIN" \
   --dataset.repo_id="$DATASET_REPO_ID" \
   --dataset.root="$DATASET_ROOT" \
