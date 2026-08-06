@@ -221,7 +221,7 @@ Snapshot around **2026-08-06 19:00 America/New_York**.
 
 | Bucket | Training | Pod | Hugging Face |
 |---|---|---|---|
-| stock | 100k complete | `fnre6t63nr42wq` EXITED | policy + dataset verified |
+| stock | 100k complete | `fnre6t63nr42wq` EXITED | policy + dataset verified · **rolled out: 11/15** |
 | spatial | 100k complete | `q7k4rlc4d5cp0w` EXITED | policy + dataset verified |
 | occlusion | 100k complete | `qmpthutzu6r2dl` EXITED | policy + dataset verified |
 | full | ~83k / 100k @ ~6.6 steps/s | `q5vlgbs5tnxsyd` RUNNING | reserved only |
@@ -754,6 +754,77 @@ Do not terminate pods until their network volumes are no longer needed.
 
 Training loss is not the experiment result. Use physical success rate.
 
+### 11.0 Measured stock baseline (2026-08-06)
+
+Stock has been rolled out on the NUC. **11 / 15 = 73%** in the nominal layout,
+60 s per trial, recorded at `so101/eval/run_recordings/2026-08-06_1833_stock`.
+
+```text
+ep  0  FAIL      ep  5  PASS      ep 10  PASS
+ep  1  FAIL      ep  6  PASS      ep 11  PASS
+ep  2  PASS      ep  7  PASS      ep 12  PASS
+ep  3  FAIL      ep  8  PASS      ep 13  FAIL
+ep  4  PASS      ep  9  PASS      ep 14  PASS
+```
+
+For scale: v1 (front-cam only) never placed the puck in 8 lifetime rollouts,
+and v2's best was ~3/6. See `so101/CHECKPOINT.md`.
+
+The failure mode is unchanged from v1/v2 and it is entirely the close. Time
+spent holding the puck inside the demos' carry band separates the two outcomes
+without overlap:
+
+```text
+failures:   0.7, 1.3, 1.3, 2.7 s
+successes:  4.6 - 5.4 s
+```
+
+So the reach and the transport are reliable; grasping is what scatters. When it
+secures the puck it finishes the task nearly every time.
+
+Two observations worth carrying into the augmented buckets:
+
+- Three of the four failures were in the first four trials, after which it went
+  10/11. If that is a warm-up effect rather than variance, it biases whichever
+  policy is run first — so run the same warm-up for every bucket.
+- One success (ep9) recovered: the first approach missed, it backed off,
+  re-approached and placed. v1/v2 never recovered from a missed close; they
+  pecked until the clock ran out. Clip in `clips/ep9_recovery_*.mp4`.
+
+### 11.1 Running a bucket
+
+```bash
+./so101/series 15                 # stock
+POLICY=spatial ./so101/series 15  # any other bucket in policies/
+```
+
+Each trial homes the arm to the demos' mean start pose, gates the setup, then
+records. `./so101/eval_py review.py <run-dir>` scores it.
+
+Everything the gate compares against is derived from `pick_place_v3` at run
+time — camera geometry from the dataset's feature shapes, start pose and puck
+placement from its episodes, the target box from where the puck ends up in the
+demos. Nothing is written into the scripts, because a hardcoded constant is how
+`ring_spot.py` came to aim at pixel (756,584) on a 640x480 frame.
+
+Three harness bugs this caught, all of which would have been scored as policy
+failures:
+
+- **Camera warm-up.** LeRobot defaults `warmup_s=1`; the RealSense front camera
+  needs ~3 s for auto-exposure/white-balance to converge (B/R 0.518 -> 0.892,
+  brightness 38 -> 112, against demos at 0.910 +/- 0.012 and 113.0 +/- 1.5). At
+  the default, the policy's first observation is ~20 sigma off-distribution and
+  ACT commits a whole 100-action chunk from it. Now `warmup_s=4`.
+- **Start-pose sag.** The follower is left limp on disconnect and sags under
+  gravity — 5.4 deg at `shoulder_lift` between two rollouts, which is several cm
+  at the gripper against a ~1 cm grasp budget. `so101/eval/goto_start.py` drives
+  it back and holds torque.
+- **Scoring on the wrong signal.** Peak grip marks the *approach* (the jaws open
+  to ~39 before closing to ~29.6 to carry), so scoring on it calls the human
+  demos themselves failures. Score on whether the puck reached the box.
+
+### 11.2 Conditions still to run
+
 Suggested conditions (same trial count per policy/condition; 20 is a reasonable
 first target):
 
@@ -1053,7 +1124,18 @@ so101/teleop.sh
 so101/eval/cam_check.py
 so101/eval/live_view.py
 so101/eval/read_pose.py
-so101/eval/ring_spot.py
+so101/eval/ring_spot.py      # v2 constants — stale for v3, superseded by preflight
+```
+
+Rollout / evaluation harness (added 2026-08-06 alongside the stock baseline):
+
+```text
+so101/series                 # N recorded trials, gated
+so101/trial                  # one trial (delegates to series)
+so101/eval_py                # runs an eval script under the venv + dialout
+so101/eval/preflight.py      # weights, cameras, holders, pose, lighting, puck
+so101/eval/goto_start.py     # drive to the demos' mean start pose, hold torque
+so101/eval/review.py         # score a run: did the puck reach the box
 ```
 
 Related docs:
