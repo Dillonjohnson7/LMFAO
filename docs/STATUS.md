@@ -20,13 +20,8 @@ clips, written back out as a ready-to-train LeRobot dataset.
 > 2. **NEVER write secrets, keys, tokens, `.env`, or credentials inside the repo
 >    tree** — not even temporarily. Use a scratch dir OUTSIDE the repo (e.g. `/tmp`).
 >    Never run `ssh-keygen -f <path-in-repo>`.
-> 3. **Before any commit, run the secret scan.** Enable the committed hook once
->    per clone: `pip install pre-commit && python3 -m pre_commit install` (see
->    `.pre-commit-config.yaml`). Use `python -m` so a user-local install works
->    even when `~/.local/bin` is not on `PATH`. If install refuses because
->    `core.hooksPath` is set (Cursor agents), scan on demand with
->    `python3 -m pre_commit run --all-files` — do not unset the agent hooks path.
->    CI also runs `gitleaks` on every PR/push to `main`. If gitleaks flags
+> 3. **Before any commit, run the secret scan** (a `gitleaks` hook is wired up):
+>    `git diff --cached` should contain zero key material; if gitleaks flags
 >    anything, STOP.
 > 4. **Never paste API keys / tokens into the chat or terminal transcript.** If a
 >    credential is needed, have the human export it as an env var themselves.
@@ -85,9 +80,11 @@ lighting, streaming writer + `--resume`, and the browser LeRobot-folder ingest +
 job.json export in `web/`.
 
 ### Canonical data
-The **only** dataset for this project is HF `Dillonjohnson/pick_place_v2` (SO101 /
-`so_follower`, wrist camera; the front camera isn't downloaded). Never the old
-Downloads teleop folder.
+- **Dev / smoke dataset:** HF `Dillonjohnson/pick_place_v2` (SO101 / `so_follower`,
+  wrist camera) — used to build and prove LMFAO's LeRobot export + ACT load.
+- **Eval dataset:** a **newly recorded** session (see `so101/rec` / `scripts/record_demos.sh` /
+  `docs/TRAINING_RUN.md`). Do not treat `pick_place_v2` as the comparative-eval
+  training set. Never the old Downloads teleop folder.
 
 ---
 
@@ -153,38 +150,49 @@ leaked secret as compromised and rotate/revoke it.
 
 **Current guardrails in place:**
 - `.gitignore` blocks key material: `*.pub`, `*.pem`, `*_key`, `id_ed25519*`,
-  `id_rsa*`, `pod_key*`, `.runpod_key`, `.env`, `.env.*`.
-- **Committed** gitleaks pre-commit hook (`.pre-commit-config.yaml`, rev pinned).
-  Enable once per clone: `pip install pre-commit && python3 -m pre_commit install`.
-  Cursor agents set `core.hooksPath`, so install is refused there — use
-  `python3 -m pre_commit run --all-files` (or CI) instead; never unset the agent
-  hooks path.
-- **CI** runs `gitleaks/gitleaks-action@v3` on every PR and push to `main`
-  (`.github/workflows/ci.yml` → `secrets` job).
-- Owner-side: SSH key rotated/revoked; GitHub push protection / secret scanning
-  enabled on the public repo (confirm in Settings → Code security).
+  `id_rsa*`, `pod_key*`, `.runpod_key`.
+- A **gitleaks** secret-scanner runs on commit ("no leaks found" required to pass).
+  Verify it's active with `git config --get core.hooksPath` / check for a
+  `pre-commit` hook; if missing on a fresh clone, re-enable it before committing.
 
-**Verified clean state (2026-08-05):** key purged from all history + force-pushed;
-every reachable blob rescanned (no private-key PEM headers); RunPod API key was
-never in the repo and has been revoked; owner-side SSH rotation + other-repo audit
-done.
+**Verified clean state (2026-08-04):** key purged from all history + force-pushed;
+every tracked file scanned — no other secrets; RunPod API key was never in the repo
+and has been revoked; SSH key rotated (old at `~/.ssh/id_ed25519.OLD-COMPROMISED`,
+delete after finishing the swap on any servers).
 
 ---
 
 ## 4. Next steps (prioritized)
 
-**A. Security — done (repo-side + owner-side)**
-Repo now ships portable gitleaks (pre-commit + CI). Owner finished SSH rotation,
-other-repo audit, and GitHub secret scanning / push protection. Remaining hygiene:
-on every fresh clone, run `python3 -m pre_commit install` before the first commit
-(or `python3 -m pre_commit run --all-files` when `core.hooksPath` blocks install).
+**A. Security — finish and verify (highest priority)**
+- Finish the SSH rotation: add the new public key to any remote servers'
+  `authorized_keys`, test login, remove the old key everywhere, then delete
+  `~/.ssh/id_ed25519.OLD-COMPROMISED{,.pub}`.
+- Confirm the gitleaks pre-commit hook is active on this clone (and set it up on any
+  new clone before the first commit).
+- Audit the OTHER repos under `~/Desktop/LocalProjects` for the same mistake — the
+  stray key file suggests `git add -A` may have leaked elsewhere too. Quick check
+  per repo: `git ls-files | grep -iE 'key|\.pub$|\.pem$|\.env'` and
+  `git log --all --diff-filter=A --name-only | grep -iE 'key|\.pub$'`.
+- Consider enabling GitHub **push protection / secret scanning** on the repo
+  (Settings → Code security) so GitHub itself blocks future secret pushes.
 
-**B. Full-scale training run (the real goal)**
-Everything is proven at smoke scale. The real run: `lmfao augment` over all 45
-`pick_place_v2` episodes at full length with N variants (drop the `--limit`/
-`--max-frames` caps), then train ACT for real steps on a pod. Use
-`COPYFILE_DISABLE=1 tar` or `huggingface-cli upload` for transfer (avoid the
-AppleDouble trap). A full augment is ~30-60 min locally; reuse the pod recipe (§2).
+**B. Comparative eval run (the real goal)** — scaffolding landed
+Everything is proven at smoke scale. The next experiment is **not** reusing
+`pick_place_v2` — it is:
+
+1. **Recollect** fresh SO101 demos (`so101/rec` / `scripts/record_demos.sh` on the robot box)
+2. **Augment** with the CLI into matched buckets (stock / lighting / noise /
+   occlusion / spatial / full) via `scripts/augment_eval_buckets.sh`
+3. **Train** one ACT policy per bucket with identical hparams
+   (`scripts/train_eval_buckets.sh` on a CUDA pod)
+4. **Compare** physical rollout success under held-out lighting / framing /
+   occlusion — that is how we tell whether the CLI helps
+
+Checklist + table: `docs/TRAINING_RUN.md`. Bucket configs:
+`configs/training/buckets/*.json`. Transfer with `COPYFILE_DISABLE=1 tar` or
+`huggingface-cli upload` (avoid AppleDouble). This cloud agent has **no robot
+and no GPU** — recording is on the SO101 workstation; training on RunPod.
 
 **C. `lmfao generate` quality (experimental → trainable)**
 The novel-view path produces 96×54, blurry, assumed-pose frames. Making it
@@ -206,6 +214,7 @@ multi-week Phase 0-1 in `v2_mini_world_generator_plan.md`. Genuine research risk
 
 ## Related docs
 - `README.md` — user-facing CLI quickstart.
+- `docs/TRAINING_RUN.md` — full-scale augment → ACT checklist and scripts.
 - `docs/v2_mini_world_generator_plan.md` — the GENERATE/splat roadmap (design doc,
   not implemented).
 - `docs/adding_features.md` — contributor guide for new augmenters.

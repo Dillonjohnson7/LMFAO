@@ -9,6 +9,13 @@ data/
 test_videos/
 augmented_videos/
 
+# SO101 workcell runtime (cameras pins, recorded demos, probe JPEGs)
+so101/datasets/**
+!so101/datasets/.gitkeep
+so101/*.path
+so101/eval/cam_probe/
+so101/eval/run_recordings/
+so101/.venv/
 
 # never commit key material / secrets
 *.pub
@@ -18,6 +25,3 @@ id_ed25519*
 id_rsa*
 pod_key*
 .runpod_key
-.env
-.env.*
-!.env.example

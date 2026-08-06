@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# ============================================================================
+# SO101 pick-and-place recorder (GUIDED, step-by-step).
+#
+#   ./so101/rec 40
+#   EPISODES=40 ./so101/rec
+#   ./so101/rec            # asks how many (default 10)
+#
+# Keys: ENTER advances steps; at keep/redo: ENTER=keep, r=redo, q=quit.
+# Empty / accidental episodes are never saved.
+#
+# One-time camera pin (on the robot box):
+#   python so101/eval/cam_check.py --find-front
+#   python so101/eval/cam_check.py --find
+# ============================================================================
+set -euo pipefail
+SO101_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck disable=SC1091
+source "$SO101_DIR/env.sh"
+
+export TASK="${TASK:-pick the blue puck and place it in the brown box}"
+if [[ -n "${1:-}" ]]; then export EPISODES="$1"; fi
+export DATASET_ROOT="${DATASET_ROOT:-$SO101_DIR/datasets/pick_place_v3}"
+export WRIST="${WRIST:-1}"
+export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
+
+if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^so101-'; then
+  echo "⚠  ALAN sentinel containers are RUNNING — they hold the arm/front cam."
+  echo "   Stop them first:  docker stop so101-camera so101-sentinel-web"
+  echo ""
+fi
+
+cd "$SO101_DIR"
+exec python "$SO101_DIR/guided_record.py"

@@ -1,0 +1,4 @@
+[
+  {"name": "noise.gaussian", "params": {"sigma": 0.03}, "probability": 1.0},
+  {"name": "noise.uniform", "params": {}, "probability": 1.0}
+]

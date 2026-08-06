@@ -18,7 +18,7 @@ lives only in each episode's metadata.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -145,30 +145,61 @@ def augment_episodes(
         sources one at a time (streaming) and still derive the same per-episode
         seeds as one in-memory call over the whole list.
     """
+    eps = list(episodes)
+    out: list[Episode] = []
+    for i, ep in enumerate(eps):
+        out.extend(
+            iter_augment_episode(
+                ep,
+                pipeline_config,
+                variants=variants,
+                seed=seed,
+                include_original=include_original,
+                source_index=index_base + i,
+            )
+        )
+    return TrainingSet(episodes=out)
+
+
+def iter_augment_episode(
+    episode: Episode,
+    pipeline_config: list | None,
+    *,
+    variants: int = 1,
+    seed: int | None = None,
+    include_original: bool = False,
+    source_index: int = 0,
+) -> Iterator[Episode]:
+    """Yield one source's original/variants one at a time.
+
+    This is the bounded-memory form used by the CLI streaming writer. A
+    dual-camera 720p episode can occupy several GiB uncompressed, so building all
+    variants in a list can exhaust RAM even though each result is written
+    immediately afterward.
+    """
     if variants < 1:
         raise ValueError("variants must be >= 1")
     steps = list(pipeline_config or [])
     if not steps:
         raise ValueError("no augmentations configured: the pipeline is empty")
 
-    eps = list(episodes)
-    out: list[Episode] = []
-    for i, ep in enumerate(eps):
-        gi = index_base + i
-        if include_original:
-            keep = ep.with_frames(ep.frames)
-            keep.metadata["augmented"] = False
-            out.append(keep)
-        for v in range(variants):
-            # A distinct index per (source, variant) so no two seasonings share an
-            # RNG stream; global source index keeps streaming == in-memory.
-            aug = _season(ep, steps, _derive_seed(seed, gi * variants + v))
-            aug.metadata["augmented"] = True
-            if variants > 1:
-                aug.metadata["variant"] = int(v)
-                aug.metadata["source_episode"] = int(gi)
-            out.append(aug)
-    return TrainingSet(episodes=out)
+    if include_original:
+        keep = episode.with_frames(episode.frames)
+        keep.metadata["augmented"] = False
+        yield keep
+    for variant in range(variants):
+        # A distinct index per (source, variant) so no two seasonings share an
+        # RNG stream; global source index keeps streaming == in-memory.
+        aug = _season(
+            episode,
+            steps,
+            _derive_seed(seed, source_index * variants + variant),
+        )
+        aug.metadata["augmented"] = True
+        if variants > 1:
+            aug.metadata["variant"] = int(variant)
+            aug.metadata["source_episode"] = int(source_index)
+        yield aug
 
 
 def sweep_episodes(
@@ -190,28 +221,51 @@ def sweep_episodes(
     ``index_base`` is the global index of the first episode, so a streaming caller
     that processes sources one at a time derives the same seeds as one bulk call.
     """
-    steps = list(specs)
-    if not steps:
-        raise ValueError("no sweep steps configured")
     eps = list(episodes)
     out: list[Episode] = []
     for i, ep in enumerate(eps):
-        gi = index_base + i
-        if include_original:
-            keep = ep.with_frames(ep.frames)
-            keep.metadata["augmented"] = False
-            out.append(keep)
-        for j, spec in enumerate(steps):
-            pipe = list(spec.get("pipeline") or [])
-            if not pipe:
-                raise ValueError(f"sweep step {spec.get('label', '?')!r} has an empty pipeline")
-            aug = _season(ep, pipe, _derive_seed(seed, gi * len(steps) + j))
-            aug.metadata["augmented"] = True
-            if spec.get("label"):
-                aug.metadata["sweep"] = spec["label"]
-            aug.metadata["source_episode"] = int(gi)
-            out.append(aug)
+        out.extend(
+            iter_sweep_episode(
+                ep,
+                specs,
+                seed=seed,
+                include_original=include_original,
+                source_index=index_base + i,
+            )
+        )
     return TrainingSet(episodes=out)
+
+
+def iter_sweep_episode(
+    episode: Episode,
+    specs: Sequence[Mapping[str, Any]],
+    *,
+    seed: int | None = None,
+    include_original: bool = False,
+    source_index: int = 0,
+) -> Iterator[Episode]:
+    """Yield one source's sweep outputs one at a time."""
+    steps = list(specs)
+    if not steps:
+        raise ValueError("no sweep steps configured")
+    if include_original:
+        keep = episode.with_frames(episode.frames)
+        keep.metadata["augmented"] = False
+        yield keep
+    for step_index, spec in enumerate(steps):
+        pipe = list(spec.get("pipeline") or [])
+        if not pipe:
+            raise ValueError(f"sweep step {spec.get('label', '?')!r} has an empty pipeline")
+        aug = _season(
+            episode,
+            pipe,
+            _derive_seed(seed, source_index * len(steps) + step_index),
+        )
+        aug.metadata["augmented"] = True
+        if spec.get("label"):
+            aug.metadata["sweep"] = spec["label"]
+        aug.metadata["source_episode"] = int(source_index)
+        yield aug
 
 
 def _derive_seed(seed: int | None, index: int) -> int | None:
@@ -224,9 +278,32 @@ def _derive_seed(seed: int | None, index: int) -> int | None:
 
 
 def _season(episode: Episode, pipeline_config: list, seed: int | None) -> Episode:
-    """Run the pixel pipeline over one episode's frames, preserving provenance."""
+    """Run the pixel pipeline over one episode's frames, preserving provenance.
+
+    Primary camera is seasoned first (params recorded in metadata). Every extra
+    camera stream then replays that same history so dual-cam demos keep a
+    consistent observation space (front + wrist, etc.).
+    """
     if not pipeline_config:
         return episode
     pipeline = AugmentationPipeline.from_config(pipeline_config, seed=seed)
     frames, metadata = pipeline(episode.frames, episode.metadata)
-    return episode.with_frames(frames, metadata=dict(metadata))
+    extras: dict[str, np.ndarray] = {}
+    if episode.extra_videos:
+        from lmfao.replay import replay_augmentation_history
+
+        history = list(metadata.get("augmentation_history") or [])
+        primary_shape = tuple(int(x) for x in episode.frames.shape)
+        # Deterministic per-extra noise streams derived from the season seed.
+        base = 0 if seed is None else int(seed)
+        for i, (key, vid) in enumerate(sorted(episode.extra_videos.items())):
+            extra_rng = np.random.default_rng(
+                int(np.random.SeedSequence([base, 0xC0FFEE, i]).generate_state(1)[0])
+            )
+            extras[key] = replay_augmentation_history(
+                vid,
+                history,
+                primary_shape=primary_shape,
+                rng=extra_rng,
+            )
+    return episode.with_frames(frames, metadata=dict(metadata), extra_videos=extras)

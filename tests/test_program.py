@@ -4,7 +4,13 @@ from conftest import PUCK_COLOR, build_episode
 
 from lmfao import generate_training_set
 from lmfao.datasets import Episode
-from lmfao.program import TrainingSet, augment_episodes, sweep_episodes
+from lmfao.program import (
+    TrainingSet,
+    augment_episodes,
+    iter_augment_episode,
+    iter_sweep_episode,
+    sweep_episodes,
+)
 
 _PIPE = [
     {"name": "lighting.brightness", "params": {"factor": 0.5}},
@@ -39,6 +45,25 @@ def test_augment_variants_are_independent_but_reproducible():
     b = augment_episodes(_plain(1), _PIPE, variants=2, seed=5)
     assert not np.array_equal(a.episodes[0].frames, a.episodes[1].frames)  # variants differ
     assert np.array_equal(a.episodes[0].frames, b.episodes[0].frames)  # reproducible
+
+
+def test_iter_augment_episode_matches_batch_order_and_seeds():
+    source = _plain(1)[0]
+    batch = augment_episodes([source], _PIPE, variants=3, seed=5, include_original=True)
+    streamed = list(
+        iter_augment_episode(
+            source,
+            _PIPE,
+            variants=3,
+            seed=5,
+            include_original=True,
+            source_index=0,
+        )
+    )
+    assert len(streamed) == len(batch.episodes)
+    for actual, expected in zip(streamed, batch.episodes):
+        assert actual.metadata == expected.metadata
+        assert np.array_equal(actual.frames, expected.frames)
 
 
 def test_augment_does_not_mutate_source_episodes():
@@ -82,6 +107,25 @@ def test_sweep_includes_originals_and_is_reproducible():
     b = sweep_episodes(_plain(1), specs, seed=3, include_original=True)
     assert sum(1 for e in a.episodes if not e.metadata.get("augmented")) == 1
     assert all(np.array_equal(x.frames, y.frames) for x, y in zip(a.episodes, b.episodes))
+
+
+def test_iter_sweep_episode_matches_batch_order_and_seeds():
+    source = _plain(1)[0]
+    specs = [_bright("-20%", 0.8), _bright("+20%", 1.2)]
+    batch = sweep_episodes([source], specs, seed=3, include_original=True)
+    streamed = list(
+        iter_sweep_episode(
+            source,
+            specs,
+            seed=3,
+            include_original=True,
+            source_index=0,
+        )
+    )
+    assert len(streamed) == len(batch.episodes)
+    for actual, expected in zip(streamed, batch.episodes):
+        assert actual.metadata == expected.metadata
+        assert np.array_equal(actual.frames, expected.frames)
 
 
 def test_sweep_rejects_empty():

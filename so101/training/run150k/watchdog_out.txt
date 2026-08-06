@@ -1,0 +1,2 @@
+TRAINING DONE (EXIT=0) — final sync + upload + terminate
+POD TERMINATED. Run complete.

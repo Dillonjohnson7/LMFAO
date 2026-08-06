@@ -25,8 +25,8 @@ class RandomCrop(Augmenter):
 
     pad: int = 8
     pad_mode: str = "reflect"
-    shift_x: int | None = None
-    shift_y: int | None = None
+    shift_x: int | list[int] | None = None
+    shift_y: int | list[int] | None = None
 
     def __post_init__(self) -> None:
         self.pad = int(self.pad)

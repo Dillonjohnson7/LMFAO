@@ -1,0 +1,1 @@
+curve: 750 pts, latest step 150000 loss 0.058

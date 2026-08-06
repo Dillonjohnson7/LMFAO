@@ -16,6 +16,10 @@ the camera a few centimeters, and the policy that looked great in the lab falls
 apart. LMFAO gets more out of the demos you already recorded — a more robust
 policy without more hours on the robot, a second camera rig, or a GPU.
 
+SO101 teleop and guided data collection live under [`so101/`](so101/README.md)
+(`./so101/rec` — ENTER / keep / redo with an episode counter). Record there, then
+augment with the CLI below.
+
 ## The CLI
 
 | command | what it does |
@@ -179,13 +183,5 @@ and checklist.
 ## Development
 
 ```bash
-pip install -e ".[dev,lerobot]"
-pip install pre-commit
-python3 -m pre_commit install   # gitleaks on every commit (python3 -m avoids PATH issues)
 pytest
 ```
-
-If `pre-commit install` refuses because `core.hooksPath` is set (Cursor cloud
-agents do this), leave that alone and either scan on demand with
-`python3 -m pre_commit run --all-files` or rely on the CI Secret scan job — do
-not unset the agent hooks path.

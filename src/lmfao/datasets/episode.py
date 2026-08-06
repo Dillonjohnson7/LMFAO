@@ -20,7 +20,13 @@ class Episode:
     Attributes
     ----------
     frames:
-        ``(F, H, W, C)`` array of frames, matching the ``Augmenter`` contract.
+        ``(F, H, W, C)`` array of frames for the *primary* camera stream
+        (``metadata["video_key"]``). This is what the pixel pipeline seasons.
+    extra_videos:
+        Additional camera streams keyed by LeRobot feature name
+        (e.g. ``observation.images.wrist``), each ``(F, H_k, W_k, C)``. Must
+        share the same frame count as ``frames``. Not stored in metadata
+        (provenance is JSON).
     state:
         Optional ``(F, D)`` per-frame robot state (joint angles, gripper, ...).
     actions:
@@ -38,7 +44,8 @@ class Episode:
         Optional ``(3, 3)`` pinhole camera matrix shared across frames.
     metadata:
         Free-form dict. Provenance is stamped here under ``"miniworld"`` and a
-        boolean ``"synthetic"`` flag.
+        boolean ``"synthetic"`` flag. Camera names live in ``video_key`` /
+        ``video_keys`` (reader-owned).
     """
 
     frames: np.ndarray
@@ -49,6 +56,7 @@ class Episode:
     camera_poses: np.ndarray | None = None
     intrinsics: np.ndarray | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    extra_videos: dict[str, np.ndarray] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         frames = np.asarray(self.frames)
@@ -76,6 +84,25 @@ class Episode:
             if k.shape != (3, 3):
                 raise ValueError(f"intrinsics must have shape (3, 3), got {k.shape}")
             self.intrinsics = k
+
+        primary = self.metadata.get("video_key")
+        cleaned: dict[str, np.ndarray] = {}
+        for key, arr in dict(self.extra_videos or {}).items():
+            if primary is not None and key == primary:
+                raise ValueError(
+                    f"extra_videos must not include the primary video_key {key!r}"
+                )
+            a = np.asarray(arr)
+            if a.ndim != 4:
+                raise ValueError(f"extra_videos[{key!r}] must have shape (F, H, W, C)")
+            if a.shape[-1] not in (1, 3, 4):
+                raise ValueError(f"extra_videos[{key!r}] channels must be 1, 3, or 4")
+            if a.shape[0] != f:
+                raise ValueError(
+                    f"extra_videos[{key!r}] has {a.shape[0]} frames but primary has {f}"
+                )
+            cleaned[str(key)] = a
+        self.extra_videos = cleaned
 
     @staticmethod
     def _check_per_frame(array: np.ndarray, num_frames: int, label: str) -> np.ndarray:
@@ -106,6 +133,22 @@ class Episode:
     def is_synthetic(self) -> bool:
         return bool(self.metadata.get("synthetic", False))
 
+    @property
+    def video_keys(self) -> list[str]:
+        """Ordered camera feature names: primary first, then extras (sorted)."""
+        primary = self.metadata.get("video_key")
+        extras = sorted(self.extra_videos)
+        if primary is None:
+            return extras
+        return [str(primary)] + [k for k in extras if k != primary]
+
+    def videos(self) -> dict[str, np.ndarray]:
+        """All camera tensors keyed by feature name."""
+        primary = self.metadata.get("video_key", "observation.images.primary")
+        out = {str(primary): self.frames}
+        out.update(self.extra_videos)
+        return out
+
     def copy(self) -> Episode:
         """Deep-ish copy: arrays and metadata are duplicated, so edits are safe."""
         return replace(
@@ -116,16 +159,34 @@ class Episode:
             camera_poses=None if self.camera_poses is None else self.camera_poses.copy(),
             intrinsics=None if self.intrinsics is None else self.intrinsics.copy(),
             metadata=_deepcopy_metadata(self.metadata),
+            extra_videos={k: v.copy() for k, v in self.extra_videos.items()},
         )
 
-    def with_frames(self, frames: np.ndarray, **overrides: Any) -> Episode:
+    def with_frames(
+        self,
+        frames: np.ndarray,
+        *,
+        extra_videos: dict[str, np.ndarray] | None = None,
+        **overrides: Any,
+    ) -> Episode:
         """Return a new episode with different frames, everything else preserved.
 
         Used by the driver to swap in pipeline-seasoned frames without disturbing
-        state, poses, or provenance.
+        state, poses, or provenance. Pass ``extra_videos`` to replace secondary
+        streams (default: deep-copy the existing extras).
         """
         new_meta = overrides.pop("metadata", _deepcopy_metadata(self.metadata))
-        return replace(self, frames=np.asarray(frames), metadata=new_meta, **overrides)
+        if extra_videos is None:
+            extras = {k: v.copy() for k, v in self.extra_videos.items()}
+        else:
+            extras = {k: np.asarray(v) for k, v in extra_videos.items()}
+        return replace(
+            self,
+            frames=np.asarray(frames),
+            metadata=new_meta,
+            extra_videos=extras,
+            **overrides,
+        )
 
 
 def _deepcopy_metadata(metadata: dict[str, Any]) -> dict[str, Any]:

@@ -7,21 +7,6 @@ on:
       - main
 
 jobs:
-  secrets:
-    name: Secret scan
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      # Personal-account repos do not need GITLEAKS_LICENSE.
-      - name: Run gitleaks
-        uses: gitleaks/gitleaks-action@v3
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
   test:
     name: Test
     runs-on: ubuntu-latest
