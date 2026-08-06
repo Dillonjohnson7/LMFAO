@@ -28,3 +28,7 @@ pod_key*
 .env
 .env.*
 !.env.example
+
+# local agent/session artifacts
+.cursor_transcript_extract.txt
+.cursor*
