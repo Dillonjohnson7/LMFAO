@@ -224,15 +224,16 @@ Snapshot around **2026-08-06 19:00 America/New_York**.
 | stock | 100k complete | `fnre6t63nr42wq` EXITED | policy + dataset verified |
 | spatial | 100k complete | `q7k4rlc4d5cp0w` EXITED | policy + dataset verified |
 | occlusion | 100k complete | `qmpthutzu6r2dl` EXITED | policy + dataset verified |
-| full | ~83k / 100k @ ~6.6 steps/s | `q5vlgbs5tnxsyd` RUNNING | reserved only |
-| lighting | ~15k / 100k @ ~2.1 steps/s | `7k25sdlk1rkgi1` RUNNING | reserved only |
-| noise | ~11k / 100k @ ~1.4 steps/s | `p3zptith51vy9b` RUNNING | reserved only |
+| full | 100k complete | `q5vlgbs5tnxsyd` RUNNING (idle) | policy + dataset verified |
+| lighting | ~21k / 100k @ ~2.0 steps/s | `7k25sdlk1rkgi1` RUNNING | reserved only |
+| noise | ~15k / 100k @ ~1.6 steps/s | `p3zptith51vy9b` RUNNING | reserved only |
 
 Checkpoint notes at snapshot:
 
-- occlusion last durable: `100000` (complete; HF retained)
-- full last durable around snapshot: `080000`
-- lighting / noise: no numbered checkpoint dirs yet
+- full last durable: `100000` (complete; HF retained; final loss 0.068,
+  ~6.44 steps/s, wall ~4h 19m)
+- lighting last durable: `020000` (first checkpoint landed)
+- noise: no numbered checkpoint dirs yet
 
 These counters are a timestamped snapshot, not a live API. Re-read pod logs
 before billing or shutdown decisions. **Never stop a pod that still has
@@ -712,14 +713,15 @@ Policies:
 Dillonjohnson/pick_place_v3_act_stock      complete
 Dillonjohnson/pick_place_v3_act_spatial    complete
 Dillonjohnson/pick_place_v3_act_occlusion  complete
+Dillonjohnson/pick_place_v3_act_full       complete
 Dillonjohnson/pick_place_v3_act_lighting   reserved
 Dillonjohnson/pick_place_v3_act_noise      reserved
-Dillonjohnson/pick_place_v3_act_full       reserved
 
 Datasets:
 Dillonjohnson/pick_place_v3_stock          complete
 Dillonjohnson/pick_place_v3_spatial        complete
 Dillonjohnson/pick_place_v3_occlusion      complete
+Dillonjohnson/pick_place_v3_full           complete
 ```
 
 Deployable files live at the **model repo root**. Do not upload credentials,
@@ -921,6 +923,52 @@ mp4 / parquet:          720 / 362
 bytes vs pod:           7,131,537,676 exact match
 size mismatches:        0
 ```
+
+### 12.4 Full policy + dataset
+
+```text
+pod:          lmfao-act-full / q5vlgbs5tnxsyd  (idle after verify)
+done marker:  /workspace/runs/eval_buckets/full.done
+checkpoints:  020000, 040000, 060000, 080000, 100000
+last:         100000
+dataset path: /workspace/eval_buckets/full
+```
+
+Metrics:
+
+```text
+final loss:         0.068
+final l1 / kld:     0.068 / 0.000
+final grad norm:    5.097
+final lr:           1.0e-05
+final mem_gb:       8.43
+throughput:         ~6.44 steps/s
+episodes / frames:  360 / 234,189
+wall time:          ~4h 19m
+```
+
+Policy repo `Dillonjohnson/pick_place_v3_act_full` — same deployable file
+set as stock.
+
+```text
+model size:   206,699,768 bytes
+model SHA-256:
+b961b703cb1538ce563b0f79a1fdb495a0a32b9d5bafe2c4cd9c6e6e3950c552
+```
+
+Dataset repo `Dillonjohnson/pick_place_v3_full`:
+
+```text
+remote files:           1087 (1085 data + README + .gitattributes)
+data files:             1085
+mp4 / parquet:          720 / 362
+bytes vs pod:           14,977,326,251 exact match
+size mismatches:        0
+```
+
+Note: the full dataset is roughly 15 GB — about 1.75× the other augmented
+buckets. The combined augmentation stack (noise + lighting + crop + occlusion)
+makes the video less compressible.
 
 ---
 
