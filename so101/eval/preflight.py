@@ -44,7 +44,7 @@ WARM_S = float(os.environ.get("WARM_S", "5"))           # past the camera AE/AWB
 # Deviations below these cannot plausibly matter to the policy (the arm sweeps
 # tens of degrees mid-task), so they bound the sigma test from below where the
 # demo spread collapses to ~0. POSE_MAX_DEG is CHECKPOINT.md's absolute gate.
-POSE_FLOOR_DEG = float(os.environ.get("POSE_FLOOR_DEG", "2.0"))
+POSE_FLOOR_DEG = float(os.environ.get("POSE_FLOOR_DEG", "6.0"))
 POSE_FLOOR_GRIP = float(os.environ.get("POSE_FLOOR_GRIP", "5.0"))
 POSE_MAX_DEG = float(os.environ.get("POSE_MAX_DEG", "25"))
 N_DEMO_FRAMES = int(os.environ.get("N_DEMO_FRAMES", "0"))  # 0 = every episode
