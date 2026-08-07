@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Go limp so the arm can be moved by hand, then lock it where you leave it.
+#
+#   ./so101/limp
+#
+# Torque drops immediately; reposition by hand; press Enter to hold there, or
+# Ctrl-C to leave it slack.
+#
+# Single token and self-elevating on purpose. This gets reached for exactly when
+# something has gone wrong -- a USB drop leaves the arm collapsed and the serial
+# node renumbered -- and that is the worst moment to be debugging a permission
+# error or a paste that split across lines.
+set -euo pipefail
+
+SO101_DIR="$(cd "$(dirname "$0")" && pwd)"
+PORT="${FOLLOWER_PORT:-/dev/so101_follower}"
+
+if [[ -e "$PORT" && ! -w "$PORT" && -z "${SO101_SG_REEXEC:-}" ]] \
+   && getent group dialout | grep -qw "$(whoami)"; then
+  export SO101_SG_REEXEC=1
+  exec sg dialout -c "$(printf '%q ' "$0" "$@")"
+fi
+
+[[ -e "$PORT" ]] || {
+  echo "no follower at $PORT — check the USB cable, then: ls -l /dev/ttyACM*" >&2
+  exit 1; }
+
+# shellcheck disable=SC1091
+source "$SO101_DIR/env.sh"
+exec python "$SO101_DIR/relax.py"
