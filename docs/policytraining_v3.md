@@ -799,6 +799,71 @@ condition without collapsing nominal success.
 
 ## 12. Artifact catalog (completed work)
 
+### 12.0 Policy summary
+
+All policies are ACT (~52M parameters, 206,699,768 bytes ≈ 200 MB), trained
+with the identical recipe: 100,000 target steps, batch 8, seed 7, 4 dataloader
+workers, prefetch 4, lr 1.0e-05, PyAV video backend, checkpoints every 20k,
+no Hub push during training. Inputs: 6D state, front RGB 640×480, wrist RGB
+1280×720 at 30 FPS; output: 6D actions.
+
+| Policy | Steps | Final loss (l1/kld) | Grad norm | Steps/s | Train data | Model SHA-256 (first 12) |
+|---|---|---|---|---|---|---|
+| stock | 100k ✅ | 0.053 (0.052/0.000) | 4.167 | ~6.49 | 40 eps / 26,021 frames | `6718be1a97c1` |
+| spatial | 100k ✅ | 0.061 (0.060/0.000) | 4.137 | ~6.42 | 360 eps / 234,189 frames | `5325ebc2af91` |
+| occlusion | 100k ✅ | 0.064 (0.064/0.000) | 4.614 | ~6.20 | 360 eps / 234,189 frames | `f476c84bf04d` |
+| full | 100k ✅ | 0.068 (0.068/0.000) | 5.097 | ~6.44 | 360 eps / 234,189 frames | `b961b703cb15` |
+| lighting | 20k ⚠️ partial | ~0.16 at cancel | — | ~1.8–2.3 | 360 eps / 234,189 frames | `c2f1cb1711f9` |
+| noise | cancelled ~15k ❌ | ~0.19 at cancel | — | ~1.1–1.7 | 360 eps / 234,189 frames | none — lost |
+
+Loss interpretation: augmented buckets train on a deliberately harder, wider
+distribution with the same 100k budget, so slightly higher final loss than
+stock is expected and is not by itself a quality signal. The experiment's
+metric is physical rollout success, not training loss.
+
+Repositories (all private):
+
+| Policy | Model repo | Dataset repo |
+|---|---|---|
+| stock | `Dillonjohnson/pick_place_v3_act_stock` | `Dillonjohnson/pick_place_v3_stock` |
+| spatial | `Dillonjohnson/pick_place_v3_act_spatial` | `Dillonjohnson/pick_place_v3_spatial` |
+| occlusion | `Dillonjohnson/pick_place_v3_act_occlusion` | `Dillonjohnson/pick_place_v3_occlusion` |
+| full | `Dillonjohnson/pick_place_v3_act_full` | `Dillonjohnson/pick_place_v3_full` |
+| lighting | `Dillonjohnson/pick_place_v3_act_lighting` (partial) | not uploaded |
+| noise | `Dillonjohnson/pick_place_v3_act_noise` (empty) | not uploaded |
+
+Collection:
+`https://huggingface.co/collections/Dillonjohnson/so101-pick-place-v3-act-policies-6a74e56a093a15c8acc55786`
+
+Using any completed policy (NUC or anywhere with HF access):
+
+```bash
+huggingface-cli login   # once, with a token that can read private repos
+lerobot-rollout ... --policy.path=Dillonjohnson/pick_place_v3_act_stock
+# or materialize locally:
+huggingface-cli download Dillonjohnson/pick_place_v3_act_stock \
+  --local-dir /home/multiply/LMFAO/policies/stock
+```
+
+Every completed policy repo root contains the full deployable set:
+
+```text
+config.json
+model.safetensors
+policy_preprocessor.json
+policy_preprocessor_step_3_normalizer_processor.safetensors
+policy_postprocessor.json
+policy_postprocessor_step_0_unnormalizer_processor.safetensors
+train_config.json
+training_summary.json
+README.md
+```
+
+Each completed dataset repo has 1,085 data files (720 MP4 + 362 parquet +
+meta), byte-verified against its training pod; stock's native-sharded dataset
+has 9 data files. Dataset sizes on HF: stock ~0.62 GB, spatial ~8.5 GB,
+occlusion ~7.1 GB, full ~15.0 GB.
+
 ### 12.1 Stock policy + dataset
 
 ```text
@@ -984,6 +1049,33 @@ size mismatches:        0
 Note: the full dataset is roughly 15 GB — about 1.75× the other augmented
 buckets. The combined augmentation stack (noise + lighting + crop + occlusion)
 makes the video less compressible.
+
+### 12.5 Lighting partial checkpoint (20k/100k) and noise (lost)
+
+Lighting was cancelled at ~21k steps. Its last durable checkpoint (20,000) was
+saved before teardown:
+
+```text
+repo:         Dillonjohnson/pick_place_v3_act_lighting  (private)
+contents:     full deployable-format root + training_summary.json
+status:       PARTIAL — 20,000 / 100,000 steps
+model size:   206,699,768 bytes
+model SHA-256:
+c2f1cb1711f9986ca4f2761709bf13627b55d64478660797ed567824ece9e63e
+loss at save: ~0.16 (still descending; undertrained)
+```
+
+This checkpoint is deployable in format but is **not** comparable to the 100k
+policies. Do not include it in the matched evaluation without retraining.
+
+Noise was cancelled at ~15k steps, before its first 20k checkpoint was
+written. Nothing recoverable exists; `Dillonjohnson/pick_place_v3_act_noise`
+remains an empty reserved repo.
+
+Neither lighting nor noise dataset was uploaded to HF. The original long-GOP
+buckets remain on the NUC at `/home/multiply/LMFAO/eval_buckets_v3`; the
+low-GOP re-encodes existed only on the deleted pods and would need to be
+regenerated with `scripts/reencode_low_gop.py` for any retrain.
 
 ---
 
