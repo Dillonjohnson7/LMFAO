@@ -204,50 +204,55 @@ Spatial’s dataset upload was interrupted at 502/1085 files and later resumed t
 a byte-identical 1085-file completion. Occlusion policy + dataset uploaded
 cleanly in one pass (1085 data files, byte-identical).
 
-Stock, spatial, and occlusion pods were stopped after HF verification. Full,
-lighting, and noise remain in active training.
+Stock, spatial, and occlusion pods were stopped after HF verification. Full
+finished the same day and followed the same path.
+
+Lighting and noise never recovered from their slow host (~2 steps/s with ~11–14
+h remaining). With the RunPod budget nearly exhausted, the operator cancelled
+both on 2026-08-06: lighting's 20k checkpoint was saved to HF, noise had no
+checkpoint and was lost, and all eight pods (six originals + two aborted
+migration pods) were deleted. The RunPod phase is closed; no billing remains.
 
 ### 2.8 Physical evaluation (in progress / operator-owned)
 
-NUC rollouts are handled separately by the operator. The durable stock policy
-source is now Hugging Face, not the stopped RunPod. The experiment is not done
-until all six policies are compared physically under matched conditions.
+NUC rollouts are handled separately by the operator. The durable policy sources
+are the private Hugging Face repos, not RunPod. The comparison set is now four
+complete policies (stock, spatial, occlusion, full); lighting exists only as a
+partial 20k checkpoint and noise was lost.
 
 ---
 
-## 3. Current status (snapshot)
+## 3. Final status (run ended 2026-08-06)
 
-Snapshot around **2026-08-06 19:00 America/New_York**.
+The RunPod phase is **closed**. All pods were deleted on 2026-08-06 ~20:24
+America/New_York to stop billing (budget exhausted). No RunPod resources
+remain.
 
-| Bucket | Training | Pod | Hugging Face |
+| Bucket | Training | Final artifact | Rollout (nominal) |
 |---|---|---|---|
-| stock | 100k complete | `fnre6t63nr42wq` EXITED | policy + dataset verified · **rolled out: 11/15** |
-| full | 100k complete | `q5vlgbs5tnxsyd` | policy verified · **rolled out: 10/15** |
-| spatial | 100k complete | `q7k4rlc4d5cp0w` EXITED | policy + dataset verified |
-| occlusion | 100k complete | `qmpthutzu6r2dl` EXITED | policy + dataset verified |
-| full | ~83k / 100k @ ~6.6 steps/s | `q5vlgbs5tnxsyd` RUNNING | reserved only |
-| lighting | ~15k / 100k @ ~2.1 steps/s | `7k25sdlk1rkgi1` RUNNING | reserved only |
-| noise | ~11k / 100k @ ~1.4 steps/s | `p3zptith51vy9b` RUNNING | reserved only |
+| stock | 100k complete | policy + dataset verified on HF | **11/15** |
+| spatial | 100k complete | policy + dataset verified on HF | not yet run |
+| occlusion | 100k complete | policy + dataset verified on HF | **10/15** |
+| full | 100k complete | policy + dataset verified on HF | **10/15** |
+| lighting | cancelled at ~21k / 100k | partial 20k checkpoint saved on HF | n/a |
+| noise | cancelled at ~15k / 100k | **lost** — no checkpoint ever written | n/a |
 
-Checkpoint notes at snapshot:
+Lighting and noise never exceeded ~2 steps/s because both pods landed on the
+same slow-host storage path (measured ~1 item/s random access vs ~6.5 on
+healthy hosts). Low-GOP re-encode, worker tuning, and local-overlay copies did
+not fix it. A migration to two fresh 4090 pods (`lmfao-act-lighting-r2`,
+`lmfao-act-noise-r2`) was provisioned and keyed, but the operator cancelled
+before the transfer started and all pods were deleted.
 
-- occlusion last durable: `100000` (complete; HF retained)
-- full last durable around snapshot: `080000`
-- lighting / noise: no numbered checkpoint dirs yet
+Noise's ~15k steps were lost because the first checkpoint (20k) had not yet
+been written. Lighting's 20k checkpoint was saved to
+`Dillonjohnson/pick_place_v3_act_lighting` (marked partial, not comparable to
+the 100k policies).
 
-These counters are a timestamped snapshot, not a live API. Re-read pod logs
-before billing or shutdown decisions. **Never stop a pod that still has
-`lerobot-train`.**
-
-On-pod paths:
-
-```text
-/workspace/eval_buckets/BUCKET          # dataset
-/workspace/runs/eval_buckets/BUCKET     # run + checkpoints
-/workspace/runs/eval_buckets/BUCKET.log
-/workspace/runs/eval_buckets/BUCKET.done
-/workspace/runs/eval_buckets/BUCKET.failed
-```
+If lighting/noise are ever retrained: provision on a healthy host, benchmark
+random-access decode **before** launch, transfer the NUC-held buckets (originals
+still exist at `/home/multiply/LMFAO/eval_buckets_v3`), re-encode low-GOP, and
+train from scratch.
 
 ---
 
@@ -399,15 +404,17 @@ Important paths:
 - Temporary datasets / checkpoints
 - Low-GOP re-encode of augmented videos
 
-Canonical map (status as of latest snapshot):
+Canonical map (all pods deleted 2026-08-06; IDs kept for historical reference):
 
 ```text
-lmfao-act-stock      fnre6t63nr42wq   EXITED after HF retention
-lmfao-act-spatial    q7k4rlc4d5cp0w   EXITED after HF retention
-lmfao-act-occlusion  qmpthutzu6r2dl   EXITED after HF retention
-lmfao-act-full       q5vlgbs5tnxsyd   RUNNING
-lmfao-act-lighting   7k25sdlk1rkgi1   RUNNING
-lmfao-act-noise      p3zptith51vy9b   RUNNING
+lmfao-act-stock      fnre6t63nr42wq   DELETED after HF retention
+lmfao-act-spatial    q7k4rlc4d5cp0w   DELETED after HF retention
+lmfao-act-occlusion  qmpthutzu6r2dl   DELETED after HF retention
+lmfao-act-full       q5vlgbs5tnxsyd   DELETED after HF retention
+lmfao-act-lighting   7k25sdlk1rkgi1   DELETED (training cancelled ~21k)
+lmfao-act-noise      p3zptith51vy9b   DELETED (training cancelled ~15k)
+lmfao-act-lighting-r2 mo9bybj9wr1pdl  DELETED (migration aborted)
+lmfao-act-noise-r2   xjctrsghb2ezbf   DELETED (migration aborted)
 ```
 
 Name pods before work starts. Stopping, renaming, or resizing a live trainer
@@ -713,14 +720,15 @@ Policies:
 Dillonjohnson/pick_place_v3_act_stock      complete
 Dillonjohnson/pick_place_v3_act_spatial    complete
 Dillonjohnson/pick_place_v3_act_occlusion  complete
-Dillonjohnson/pick_place_v3_act_lighting   reserved
-Dillonjohnson/pick_place_v3_act_noise      reserved
-Dillonjohnson/pick_place_v3_act_full       reserved
+Dillonjohnson/pick_place_v3_act_full       complete
+Dillonjohnson/pick_place_v3_act_lighting   partial (20k/100k checkpoint)
+Dillonjohnson/pick_place_v3_act_noise      empty (training cancelled pre-checkpoint)
 
 Datasets:
 Dillonjohnson/pick_place_v3_stock          complete
 Dillonjohnson/pick_place_v3_spatial        complete
 Dillonjohnson/pick_place_v3_occlusion      complete
+Dillonjohnson/pick_place_v3_full           complete
 ```
 
 Deployable files live at the **model repo root**. Do not upload credentials,
@@ -736,18 +744,26 @@ pods only in memory.
 5. Verify remote file counts and byte sizes against the pod.
 6. Only then: `runpodctl pod stop <id>`.
 
-### 10.3 Idle shutdown used so far
+### 10.3 Shutdown history (run closed)
 
 ```bash
 export RUNPOD_API_KEY="$(<"$HOME/.config/lmfao/runpod_api_key")"
+# stopped after HF verification:
 runpodctl pod stop fnre6t63nr42wq   # stock
 runpodctl pod stop q7k4rlc4d5cp0w   # spatial
 runpodctl pod stop qmpthutzu6r2dl   # occlusion
+runpodctl pod stop q5vlgbs5tnxsyd   # full
+
+# final teardown 2026-08-06 ~20:24 ET (budget exhausted) — deleted ALL pods,
+# including the two aborted migration pods:
+runpodctl pod delete 7k25sdlk1rkgi1   # lighting (training cancelled)
+runpodctl pod delete p3zptith51vy9b   # noise (training cancelled)
+runpodctl pod delete mo9bybj9wr1pdl   # lighting-r2 (aborted)
+runpodctl pod delete xjctrsghb2ezbf   # noise-r2 (aborted)
+runpodctl pod delete fnre6t63nr42wq q7k4rlc4d5cp0w qmpthutzu6r2dl q5vlgbs5tnxsyd
 ```
 
-Still training (do not touch): full, lighting, noise.
-
-Do not terminate pods until their network volumes are no longer needed.
+`runpodctl pod list` returned `[]` after teardown. No RunPod billing remains.
 
 ---
 
@@ -901,6 +917,71 @@ condition without collapsing nominal success.
 
 ## 12. Artifact catalog (completed work)
 
+### 12.0 Policy summary
+
+All policies are ACT (~52M parameters, 206,699,768 bytes ≈ 200 MB), trained
+with the identical recipe: 100,000 target steps, batch 8, seed 7, 4 dataloader
+workers, prefetch 4, lr 1.0e-05, PyAV video backend, checkpoints every 20k,
+no Hub push during training. Inputs: 6D state, front RGB 640×480, wrist RGB
+1280×720 at 30 FPS; output: 6D actions.
+
+| Policy | Steps | Final loss (l1/kld) | Grad norm | Steps/s | Train data | Model SHA-256 (first 12) |
+|---|---|---|---|---|---|---|
+| stock | 100k ✅ | 0.053 (0.052/0.000) | 4.167 | ~6.49 | 40 eps / 26,021 frames | `6718be1a97c1` |
+| spatial | 100k ✅ | 0.061 (0.060/0.000) | 4.137 | ~6.42 | 360 eps / 234,189 frames | `5325ebc2af91` |
+| occlusion | 100k ✅ | 0.064 (0.064/0.000) | 4.614 | ~6.20 | 360 eps / 234,189 frames | `f476c84bf04d` |
+| full | 100k ✅ | 0.068 (0.068/0.000) | 5.097 | ~6.44 | 360 eps / 234,189 frames | `b961b703cb15` |
+| lighting | 20k ⚠️ partial | ~0.16 at cancel | — | ~1.8–2.3 | 360 eps / 234,189 frames | `c2f1cb1711f9` |
+| noise | cancelled ~15k ❌ | ~0.19 at cancel | — | ~1.1–1.7 | 360 eps / 234,189 frames | none — lost |
+
+Loss interpretation: augmented buckets train on a deliberately harder, wider
+distribution with the same 100k budget, so slightly higher final loss than
+stock is expected and is not by itself a quality signal. The experiment's
+metric is physical rollout success, not training loss.
+
+Repositories (all private):
+
+| Policy | Model repo | Dataset repo |
+|---|---|---|
+| stock | `Dillonjohnson/pick_place_v3_act_stock` | `Dillonjohnson/pick_place_v3_stock` |
+| spatial | `Dillonjohnson/pick_place_v3_act_spatial` | `Dillonjohnson/pick_place_v3_spatial` |
+| occlusion | `Dillonjohnson/pick_place_v3_act_occlusion` | `Dillonjohnson/pick_place_v3_occlusion` |
+| full | `Dillonjohnson/pick_place_v3_act_full` | `Dillonjohnson/pick_place_v3_full` |
+| lighting | `Dillonjohnson/pick_place_v3_act_lighting` (partial) | not uploaded |
+| noise | `Dillonjohnson/pick_place_v3_act_noise` (empty) | not uploaded |
+
+Collection:
+`https://huggingface.co/collections/Dillonjohnson/so101-pick-place-v3-act-policies-6a74e56a093a15c8acc55786`
+
+Using any completed policy (NUC or anywhere with HF access):
+
+```bash
+huggingface-cli login   # once, with a token that can read private repos
+lerobot-rollout ... --policy.path=Dillonjohnson/pick_place_v3_act_stock
+# or materialize locally:
+huggingface-cli download Dillonjohnson/pick_place_v3_act_stock \
+  --local-dir /home/multiply/LMFAO/policies/stock
+```
+
+Every completed policy repo root contains the full deployable set:
+
+```text
+config.json
+model.safetensors
+policy_preprocessor.json
+policy_preprocessor_step_3_normalizer_processor.safetensors
+policy_postprocessor.json
+policy_postprocessor_step_0_unnormalizer_processor.safetensors
+train_config.json
+training_summary.json
+README.md
+```
+
+Each completed dataset repo has 1,085 data files (720 MP4 + 362 parquet +
+meta), byte-verified against its training pod; stock's native-sharded dataset
+has 9 data files. Dataset sizes on HF: stock ~0.62 GB, spatial ~8.5 GB,
+occlusion ~7.1 GB, full ~15.0 GB.
+
 ### 12.1 Stock policy + dataset
 
 ```text
@@ -1040,6 +1121,79 @@ mp4 / parquet:          720 / 362
 bytes vs pod:           7,131,537,676 exact match
 size mismatches:        0
 ```
+
+### 12.4 Full policy + dataset
+
+```text
+pod:          lmfao-act-full / q5vlgbs5tnxsyd  (EXITED after verify)
+done marker:  /workspace/runs/eval_buckets/full.done
+checkpoints:  020000, 040000, 060000, 080000, 100000
+last:         100000
+dataset path: /workspace/eval_buckets/full
+```
+
+Metrics:
+
+```text
+final loss:         0.068
+final l1 / kld:     0.068 / 0.000
+final grad norm:    5.097
+final lr:           1.0e-05
+final mem_gb:       8.43
+throughput:         ~6.44 steps/s
+episodes / frames:  360 / 234,189
+wall time:          ~4h 19m
+```
+
+Policy repo `Dillonjohnson/pick_place_v3_act_full` — same deployable file
+set as stock.
+
+```text
+model size:   206,699,768 bytes
+model SHA-256:
+b961b703cb1538ce563b0f79a1fdb495a0a32b9d5bafe2c4cd9c6e6e3950c552
+```
+
+Dataset repo `Dillonjohnson/pick_place_v3_full`:
+
+```text
+remote files:           1087 (1085 data + README + .gitattributes)
+data files:             1085
+mp4 / parquet:          720 / 362
+bytes vs pod:           14,977,326,251 exact match
+size mismatches:        0
+```
+
+Note: the full dataset is roughly 15 GB — about 1.75× the other augmented
+buckets. The combined augmentation stack (noise + lighting + crop + occlusion)
+makes the video less compressible.
+
+### 12.5 Lighting partial checkpoint (20k/100k) and noise (lost)
+
+Lighting was cancelled at ~21k steps. Its last durable checkpoint (20,000) was
+saved before teardown:
+
+```text
+repo:         Dillonjohnson/pick_place_v3_act_lighting  (private)
+contents:     full deployable-format root + training_summary.json
+status:       PARTIAL — 20,000 / 100,000 steps
+model size:   206,699,768 bytes
+model SHA-256:
+c2f1cb1711f9986ca4f2761709bf13627b55d64478660797ed567824ece9e63e
+loss at save: ~0.16 (still descending; undertrained)
+```
+
+This checkpoint is deployable in format but is **not** comparable to the 100k
+policies. Do not include it in the matched evaluation without retraining.
+
+Noise was cancelled at ~15k steps, before its first 20k checkpoint was
+written. Nothing recoverable exists; `Dillonjohnson/pick_place_v3_act_noise`
+remains an empty reserved repo.
+
+Neither lighting nor noise dataset was uploaded to HF. The original long-GOP
+buckets remain on the NUC at `/home/multiply/LMFAO/eval_buckets_v3`; the
+low-GOP re-encodes existed only on the deleted pods and would need to be
+regenerated with `scripts/reencode_low_gop.py` for any retrain.
 
 ---
 
@@ -1198,18 +1352,19 @@ docs/policytraining_v3.md
 
 ## 17. Definition of done
 
-**Training phase complete when:**
+**Training phase final state (2026-08-06):**
 
-- all six policies reach 100,000 steps
-- each has a valid `checkpoints/last/pretrained_model`
-- each is uploaded to its private HF model repo with complete deployable root
-- model size and LFS SHA-256 are verified
-- each artifact loads successfully
-- finished pods are stopped only after that verification
+- stock, spatial, occlusion, full reached 100,000 steps, each with a valid
+  `checkpoints/last/pretrained_model`, uploaded to its private HF model repo
+  with verified model size and LFS SHA-256, plus byte-verified datasets
+- lighting was cancelled at ~21k; its 20k checkpoint is retained on HF as a
+  partial artifact
+- noise was cancelled at ~15k before its first checkpoint; nothing retained
+- all RunPod pods deleted; no cloud billing remains
 
 **Experiment complete when:**
 
-- all six policies are rolled out on the same robot/camera setup
+- the four completed policies are rolled out on the same robot/camera setup
 - nominal and held-out trials are recorded
 - success rates and failure modes are compared
 - RunPod resources are cleaned up after durable retention

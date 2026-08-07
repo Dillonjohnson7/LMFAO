@@ -25,3 +25,10 @@ id_ed25519*
 id_rsa*
 pod_key*
 .runpod_key
+.env
+.env.*
+!.env.example
+
+# local agent/session artifacts
+.cursor_transcript_extract.txt
+.cursor*
