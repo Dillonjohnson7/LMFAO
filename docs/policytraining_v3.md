@@ -754,10 +754,39 @@ Do not terminate pods until their network volumes are no longer needed.
 
 Training loss is not the experiment result. Use physical success rate.
 
-### 11.0 Measured stock baseline (2026-08-06)
+### 11.0 Results so far (2026-08-06, nominal layout)
 
-Stock has been rolled out on the NUC. **11 / 15 = 73%** in the nominal layout,
-60 s per trial, recorded at `so101/eval/run_recordings/2026-08-06_1833_stock`.
+| policy | placed | grasp failures | placement failures | run |
+|---|---|---|---|---|
+| stock | **11/15 (73%)** | 4 | 0 | `2026-08-06_1833_stock` |
+| occlusion | **10/15 (67%)** | 3 | 2 | `2026-08-06_1928_occlusion` |
+
+One trial apart, which at n=15 is noise — nothing can be concluded from the
+gap. Both runs are 60 s per trial with 25 s resets, identical gates, and the
+same policy configuration; the only difference is the training corpus.
+Per-episode clips and a synced viewer are under each run's `clips/` and
+`web/index.html` (`so101/eval/make_viewer.py`).
+
+Where they fail is more informative than the rate. Every stock failure was at
+the close. Occlusion failed at the close three times, but twice it carried the
+puck to the box and dropped it short on the rim — the same failure v1 hit on
+its first-ever pick. Stock never did that.
+
+Occlusion also behaves differently *after* succeeding: it keeps moving and
+grabs at empty air with the puck plainly sitting in the box, markedly more than
+stock. Neither policy has a termination signal so some of this is expected, but
+the degree differs. Worth testing with a vision ablation (hold
+`observation.state` fixed, swap only the camera images, measure how far the
+predicted action moves) — occlusion augmentation trains a policy to keep
+working when parts of the image are blocked, which could plausibly teach it to
+depend less on vision overall. Stock's numbers for that comparison: images from
+another episode move the action 8.5-15.1 deg, black frames 42.5 deg, random
+noise 57.6 deg. A vision-blind policy returns ~0.
+
+### 11.0.1 Stock baseline detail
+
+**11 / 15 = 73%** in the nominal layout, 60 s per trial, recorded at
+`so101/eval/run_recordings/2026-08-06_1833_stock`.
 
 ```text
 ep  0  FAIL      ep  5  PASS      ep 10  PASS
