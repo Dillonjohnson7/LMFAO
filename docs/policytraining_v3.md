@@ -204,50 +204,55 @@ Spatial’s dataset upload was interrupted at 502/1085 files and later resumed t
 a byte-identical 1085-file completion. Occlusion policy + dataset uploaded
 cleanly in one pass (1085 data files, byte-identical).
 
-Stock, spatial, and occlusion pods were stopped after HF verification. Full,
-lighting, and noise remain in active training.
+Stock, spatial, and occlusion pods were stopped after HF verification. Full
+finished the same day and followed the same path.
+
+Lighting and noise never recovered from their slow host (~2 steps/s with ~11–14
+h remaining). With the RunPod budget nearly exhausted, the operator cancelled
+both on 2026-08-06: lighting's 20k checkpoint was saved to HF, noise had no
+checkpoint and was lost, and all eight pods (six originals + two aborted
+migration pods) were deleted. The RunPod phase is closed; no billing remains.
 
 ### 2.8 Physical evaluation (in progress / operator-owned)
 
-NUC rollouts are handled separately by the operator. The durable stock policy
-source is now Hugging Face, not the stopped RunPod. The experiment is not done
-until all six policies are compared physically under matched conditions.
+NUC rollouts are handled separately by the operator. The durable policy sources
+are the private Hugging Face repos, not RunPod. The comparison set is now four
+complete policies (stock, spatial, occlusion, full); lighting exists only as a
+partial 20k checkpoint and noise was lost.
 
 ---
 
-## 3. Current status (snapshot)
+## 3. Final status (run ended 2026-08-06)
 
-Snapshot around **2026-08-06 19:00 America/New_York**.
+The RunPod phase is **closed**. All pods were deleted on 2026-08-06 ~20:24
+America/New_York to stop billing (budget exhausted). No RunPod resources
+remain.
 
-| Bucket | Training | Pod | Hugging Face |
-|---|---|---|---|
-| stock | 100k complete | `fnre6t63nr42wq` EXITED | policy + dataset verified |
-| spatial | 100k complete | `q7k4rlc4d5cp0w` EXITED | policy + dataset verified |
-| occlusion | 100k complete | `qmpthutzu6r2dl` EXITED | policy + dataset verified |
-| full | 100k complete | `q5vlgbs5tnxsyd` EXITED | policy + dataset verified |
-| lighting | ~21k / 100k @ ~2.0 steps/s | `7k25sdlk1rkgi1` RUNNING | reserved only |
-| noise | ~15k / 100k @ ~1.6 steps/s | `p3zptith51vy9b` RUNNING | reserved only |
+| Bucket | Training | Final artifact |
+|---|---|---|
+| stock | 100k complete | policy + dataset verified on HF |
+| spatial | 100k complete | policy + dataset verified on HF |
+| occlusion | 100k complete | policy + dataset verified on HF |
+| full | 100k complete | policy + dataset verified on HF |
+| lighting | cancelled at ~21k / 100k | partial 20k checkpoint saved on HF |
+| noise | cancelled at ~15k / 100k | **lost** — no checkpoint ever written |
 
-Checkpoint notes at snapshot:
+Lighting and noise never exceeded ~2 steps/s because both pods landed on the
+same slow-host storage path (measured ~1 item/s random access vs ~6.5 on
+healthy hosts). Low-GOP re-encode, worker tuning, and local-overlay copies did
+not fix it. A migration to two fresh 4090 pods (`lmfao-act-lighting-r2`,
+`lmfao-act-noise-r2`) was provisioned and keyed, but the operator cancelled
+before the transfer started and all pods were deleted.
 
-- full last durable: `100000` (complete; HF retained; final loss 0.068,
-  ~6.44 steps/s, wall ~4h 19m)
-- lighting last durable: `020000` (first checkpoint landed)
-- noise: no numbered checkpoint dirs yet
+Noise's ~15k steps were lost because the first checkpoint (20k) had not yet
+been written. Lighting's 20k checkpoint was saved to
+`Dillonjohnson/pick_place_v3_act_lighting` (marked partial, not comparable to
+the 100k policies).
 
-These counters are a timestamped snapshot, not a live API. Re-read pod logs
-before billing or shutdown decisions. **Never stop a pod that still has
-`lerobot-train`.**
-
-On-pod paths:
-
-```text
-/workspace/eval_buckets/BUCKET          # dataset
-/workspace/runs/eval_buckets/BUCKET     # run + checkpoints
-/workspace/runs/eval_buckets/BUCKET.log
-/workspace/runs/eval_buckets/BUCKET.done
-/workspace/runs/eval_buckets/BUCKET.failed
-```
+If lighting/noise are ever retrained: provision on a healthy host, benchmark
+random-access decode **before** launch, transfer the NUC-held buckets (originals
+still exist at `/home/multiply/LMFAO/eval_buckets_v3`), re-encode low-GOP, and
+train from scratch.
 
 ---
 
@@ -399,15 +404,17 @@ Important paths:
 - Temporary datasets / checkpoints
 - Low-GOP re-encode of augmented videos
 
-Canonical map (status as of latest snapshot):
+Canonical map (all pods deleted 2026-08-06; IDs kept for historical reference):
 
 ```text
-lmfao-act-stock      fnre6t63nr42wq   EXITED after HF retention
-lmfao-act-spatial    q7k4rlc4d5cp0w   EXITED after HF retention
-lmfao-act-occlusion  qmpthutzu6r2dl   EXITED after HF retention
-lmfao-act-full       q5vlgbs5tnxsyd   EXITED after HF retention
-lmfao-act-lighting   7k25sdlk1rkgi1   RUNNING
-lmfao-act-noise      p3zptith51vy9b   RUNNING
+lmfao-act-stock      fnre6t63nr42wq   DELETED after HF retention
+lmfao-act-spatial    q7k4rlc4d5cp0w   DELETED after HF retention
+lmfao-act-occlusion  qmpthutzu6r2dl   DELETED after HF retention
+lmfao-act-full       q5vlgbs5tnxsyd   DELETED after HF retention
+lmfao-act-lighting   7k25sdlk1rkgi1   DELETED (training cancelled ~21k)
+lmfao-act-noise      p3zptith51vy9b   DELETED (training cancelled ~15k)
+lmfao-act-lighting-r2 mo9bybj9wr1pdl  DELETED (migration aborted)
+lmfao-act-noise-r2   xjctrsghb2ezbf   DELETED (migration aborted)
 ```
 
 Name pods before work starts. Stopping, renaming, or resizing a live trainer
@@ -714,8 +721,8 @@ Dillonjohnson/pick_place_v3_act_stock      complete
 Dillonjohnson/pick_place_v3_act_spatial    complete
 Dillonjohnson/pick_place_v3_act_occlusion  complete
 Dillonjohnson/pick_place_v3_act_full       complete
-Dillonjohnson/pick_place_v3_act_lighting   reserved
-Dillonjohnson/pick_place_v3_act_noise      reserved
+Dillonjohnson/pick_place_v3_act_lighting   partial (20k/100k checkpoint)
+Dillonjohnson/pick_place_v3_act_noise      empty (training cancelled pre-checkpoint)
 
 Datasets:
 Dillonjohnson/pick_place_v3_stock          complete
@@ -737,19 +744,26 @@ pods only in memory.
 5. Verify remote file counts and byte sizes against the pod.
 6. Only then: `runpodctl pod stop <id>`.
 
-### 10.3 Idle shutdown used so far
+### 10.3 Shutdown history (run closed)
 
 ```bash
 export RUNPOD_API_KEY="$(<"$HOME/.config/lmfao/runpod_api_key")"
+# stopped after HF verification:
 runpodctl pod stop fnre6t63nr42wq   # stock
 runpodctl pod stop q7k4rlc4d5cp0w   # spatial
 runpodctl pod stop qmpthutzu6r2dl   # occlusion
 runpodctl pod stop q5vlgbs5tnxsyd   # full
+
+# final teardown 2026-08-06 ~20:24 ET (budget exhausted) — deleted ALL pods,
+# including the two aborted migration pods:
+runpodctl pod delete 7k25sdlk1rkgi1   # lighting (training cancelled)
+runpodctl pod delete p3zptith51vy9b   # noise (training cancelled)
+runpodctl pod delete mo9bybj9wr1pdl   # lighting-r2 (aborted)
+runpodctl pod delete xjctrsghb2ezbf   # noise-r2 (aborted)
+runpodctl pod delete fnre6t63nr42wq q7k4rlc4d5cp0w qmpthutzu6r2dl q5vlgbs5tnxsyd
 ```
 
-Still training (do not touch): lighting, noise.
-
-Do not terminate pods until their network volumes are no longer needed.
+`runpodctl pod list` returned `[]` after teardown. No RunPod billing remains.
 
 ---
 
@@ -1117,18 +1131,19 @@ docs/policytraining_v3.md
 
 ## 17. Definition of done
 
-**Training phase complete when:**
+**Training phase final state (2026-08-06):**
 
-- all six policies reach 100,000 steps
-- each has a valid `checkpoints/last/pretrained_model`
-- each is uploaded to its private HF model repo with complete deployable root
-- model size and LFS SHA-256 are verified
-- each artifact loads successfully
-- finished pods are stopped only after that verification
+- stock, spatial, occlusion, full reached 100,000 steps, each with a valid
+  `checkpoints/last/pretrained_model`, uploaded to its private HF model repo
+  with verified model size and LFS SHA-256, plus byte-verified datasets
+- lighting was cancelled at ~21k; its 20k checkpoint is retained on HF as a
+  partial artifact
+- noise was cancelled at ~15k before its first checkpoint; nothing retained
+- all RunPod pods deleted; no cloud billing remains
 
 **Experiment complete when:**
 
-- all six policies are rolled out on the same robot/camera setup
+- the four completed policies are rolled out on the same robot/camera setup
 - nominal and held-out trials are recorded
 - success rates and failure modes are compared
 - RunPod resources are cleaned up after durable retention
