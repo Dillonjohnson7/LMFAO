@@ -222,6 +222,7 @@ Snapshot around **2026-08-06 19:00 America/New_York**.
 | Bucket | Training | Pod | Hugging Face |
 |---|---|---|---|
 | stock | 100k complete | `fnre6t63nr42wq` EXITED | policy + dataset verified · **rolled out: 11/15** |
+| full | 100k complete | `q5vlgbs5tnxsyd` | policy verified · **rolled out: 10/15** |
 | spatial | 100k complete | `q7k4rlc4d5cp0w` EXITED | policy + dataset verified |
 | occlusion | 100k complete | `qmpthutzu6r2dl` EXITED | policy + dataset verified |
 | full | ~83k / 100k @ ~6.6 steps/s | `q5vlgbs5tnxsyd` RUNNING | reserved only |
@@ -756,21 +757,39 @@ Training loss is not the experiment result. Use physical success rate.
 
 ### 11.0 Results so far (2026-08-06, nominal layout)
 
-| policy | placed | grasp failures | placement failures | run |
+| policy | placed | failed at the grasp | failed after grasping | run |
 |---|---|---|---|---|
 | stock | **11/15 (73%)** | 4 | 0 | `2026-08-06_1833_stock` |
 | occlusion | **10/15 (67%)** | 3 | 2 | `2026-08-06_1928_occlusion` |
+| full | **10/15 (67%)** | 4 | 1 | `2026-08-06_2034_full` |
 
-One trial apart, which at n=15 is noise — nothing can be concluded from the
-gap. Both runs are 60 s per trial with 25 s resets, identical gates, and the
+All three land within one trial of each other, which at n=15 is
+indistinguishable. **No augmentation family beat stock in the nominal layout,
+and none collapsed either.**
+
+The second half of that is what matters here. The criterion in §11.2 is that a
+family is useful when it beats stock in its *matching held-out* condition
+without collapsing nominal success. Nominal is intact for all three, so nothing
+has been ruled out — these runs are the control, and the held-out conditions
+are still to run.
+
+Worth noting what does *not* predict physical success: final loss and offline
+MAE both order stock -> spatial -> occlusion -> full, exactly by augmentation
+aggressiveness (0.053 / 0.061 / 0.064 / 0.068; 0.86 / - / 1.02 / 1.07 deg).
+None of that ordering appears in the rollout results. That is the whole reason
+the experiment is scored on the robot. Both runs are 60 s per trial with 25 s resets, identical gates, and the
 same policy configuration; the only difference is the training corpus.
 Per-episode clips and a synced viewer are under each run's `clips/` and
 `web/index.html` (`so101/eval/make_viewer.py`).
 
 Where they fail is more informative than the rate. Every stock failure was at
-the close. Occlusion failed at the close three times, but twice it carried the
-puck to the box and dropped it short on the rim — the same failure v1 hit on
-its first-ever pick. Stock never did that.
+the close — the grasp missing by roughly a centimetre. Both augmented policies
+failed that way too, but each also produced a failure stock never did:
+occlusion twice carried the puck to the box and dropped it short on the rim
+(the same failure v1 hit on its first-ever pick), and full once grasped the
+puck, carried it 13 cm, and released it nowhere near the box. So the augmented
+policies reach further into the task before failing, without converting that
+into a higher success rate.
 
 Occlusion also behaves differently *after* succeeding: it keeps moving and
 grabs at empty air with the puck plainly sitting in the box, markedly more than
