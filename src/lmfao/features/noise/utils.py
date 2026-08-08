@@ -10,10 +10,12 @@ Everything here is NumPy only, matching the core install.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import numpy as np
 
-from lmfao.base import Video, preserve_dtype
-from lmfao.features.noise.accelerator import dynamic_range
+from lmfao.base import Video
+from lmfao.features.noise.accelerator import block_bounds, dynamic_range, run_blocks, store_as
 
 # The luminance quantisation table from the JPEG standard (Annex K). Applied to
 # every channel: chroma is not subsampled, so this stands in for MJPEG rather
@@ -45,12 +47,26 @@ def _dct_matrix() -> np.ndarray:
 _DCT = _dct_matrix()
 
 
-def _finish(video: Video, frames: np.ndarray) -> Video:
-    """Round before the cast, which truncates, so a flat region survives intact."""
+def _per_frame(video: Video, transform: Callable[[np.ndarray], np.ndarray]) -> Video:
+    """Apply ``transform`` to spans of frames in parallel and reassemble the clip.
 
-    if np.issubdtype(video.dtype, np.integer):
-        np.rint(frames, out=frames)
-    return preserve_dtype(video, frames)
+    Both operations here treat frames independently, so splitting the clip along
+    time is exact -- and it keeps each worker's float32 scratch buffer a
+    fraction of the whole clip rather than a copy of it.
+    """
+
+    out = np.empty_like(video)
+    bounds = block_bounds(video.shape[0])
+
+    def fill(index: int) -> None:
+        low, high = bounds[index], bounds[index + 1]
+        if low == high:
+            return
+        # astype always copies, so a float32 clip is never mutated in place.
+        store_as(out[low:high], transform(video[low:high].astype(np.float32)))
+
+    run_blocks(fill, len(bounds) - 1, video.size)
+    return out
 
 
 def gaussian_kernel(radius: float) -> np.ndarray:
@@ -81,9 +97,7 @@ def defocus_blur(video: Video, radius: float) -> Video:
     """
 
     kernel = gaussian_kernel(radius)
-    frames = np.asarray(video, dtype=np.float32)
-    frames = blur_axis(blur_axis(frames, kernel, 1), kernel, 2)
-    return _finish(video, frames)
+    return _per_frame(video, lambda frames: blur_axis(blur_axis(frames, kernel, 1), kernel, 2))
 
 
 def quantization_table(quality: float) -> np.ndarray:
@@ -102,22 +116,25 @@ def jpeg_artifacts(video: Video, quality: float) -> Video:
     """
 
     span = dynamic_range(video.dtype)
-    frames = np.asarray(video, dtype=np.float32) * (255.0 / span)
-    _, height, width, _ = frames.shape
-    pad_h, pad_w = -height % 8, -width % 8
-    if pad_h or pad_w:
-        frames = np.pad(frames, ((0, 0), (0, pad_h), (0, pad_w), (0, 0)), mode="edge")
-
-    frames -= 128.0  # the level shift the standard applies before transforming
-    blocks = _to_blocks(frames)
     table = quantization_table(quality)
-    coefficients = _DCT @ blocks @ _DCT.T
-    np.rint(coefficients / table, out=coefficients)
-    coefficients *= table
-    frames = _from_blocks(_DCT.T @ coefficients @ _DCT, frames.shape)
-    frames += 128.0
+    _, height, width, _ = video.shape
+    pad_h, pad_w = -height % 8, -width % 8
 
-    return _finish(video, frames[:, :height, :width, :] * (span / 255.0))
+    def quantize(frames: np.ndarray) -> np.ndarray:
+        frames *= 255.0 / span
+        if pad_h or pad_w:
+            frames = np.pad(frames, ((0, 0), (0, pad_h), (0, pad_w), (0, 0)), mode="edge")
+
+        frames -= 128.0  # the level shift the standard applies before transforming
+        coefficients = _DCT @ _to_blocks(frames) @ _DCT.T
+        np.rint(coefficients / table, out=coefficients)
+        coefficients *= table
+        frames = _from_blocks(_DCT.T @ coefficients @ _DCT, frames.shape)
+        frames += 128.0
+
+        return frames[:, :height, :width, :] * (span / 255.0)
+
+    return _per_frame(video, quantize)
 
 
 def _to_blocks(frames: np.ndarray) -> np.ndarray:

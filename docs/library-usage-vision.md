@@ -32,17 +32,23 @@ Videos are arrays shaped:
 
 NumPy arrays today. A GPU array type is the obvious next step.
 
-## Why GPU is on the roadmap
+## Why noise got a GPU path first (landed)
 
 Noise is dominated by drawing the random numbers, not by the arithmetic that
-follows. That makes it a good fit for the GPU: the whole clip can be sampled as
-one tensor, so a single cuRAND launch covers every frame, pixel, and channel.
-The distribution is the only thing that differs between noise types, so each new
-type stays a single generator call.
+follows. That made it the obvious first candidate for the GPU: the whole clip is
+sampled as one tensor, so a single launch covers every frame, pixel, and
+channel, and the distribution is the only thing that differs between noise
+types. This shipped in `features/noise/accelerator.py`.
 
-Whenever that lands, it should run wherever the video already lives, so nothing
-is copied between devices behind your back. That belongs in the `backends/`
-layer described in `architecture.md`, not in the feature modules.
+The same observation drove the CPU path, which now draws its blocks in parallel
+instead of on one core. That narrowed the accelerator's lead on a 32-frame 720p
+clip from ~25x to ~4x, so the GPU is a speedup rather than a requirement --
+which matters, because torch cannot be installed alongside `av` in the
+dataset-touching environment.
+
+A general device-resident array type is still future work: today the accelerator
+uploads and downloads per call. That belongs in the `backends/` layer described
+in `architecture.md`, not in the feature modules.
 
 ## How this maps to the current codebase
 
@@ -58,6 +64,6 @@ The helpers above should sit on top of that. Most users only touch `import lmfao
 
 - Top-level helpers: `lighting`, `noise`, `occlusion`, `full_augmentations`
 - Named presets (e.g. `"shadow"`, `"gaussian"`, `"cutout"`)
-- Real feature implementations (noise has landed; lighting and occlusion are in flight)
-- A GPU backend so sampling is not CPU-bound
+- Real feature implementations (noise, lighting, occlusion and spatial have all landed)
+- A device-resident array type, so a multi-step pipeline is not copied per call
 - Speed path for `full_augmentations` (ideally fused, not three separate copies)

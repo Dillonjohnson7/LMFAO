@@ -10,8 +10,9 @@ from lmfao.features.noise import (
     GaussianNoise,
     ShotNoise,
     UniformNoise,
+    accelerator,
 )
-from lmfao.features.noise.accelerator import resolve_device
+from lmfao.features.noise.accelerator import block_bounds, block_generators, resolve_device
 from lmfao.registry import get_augmenter
 
 # The noises drawn per pixel, and the keyword that sets each one's strength.
@@ -95,8 +96,37 @@ def test_integer_video_rounds_and_clips_like_the_float_reference():
 
     augmented, _ = augmenter(video, rng=np.random.default_rng(0))
 
-    noise = np.random.default_rng(0).standard_normal(video.shape, dtype=np.float32) * (0.5 * 255.0)
-    assert np.array_equal(augmented, np.clip(np.rint(noise + video), 0, 255).astype(np.uint8))
+    # Reproduce the CPU path's per-block draw, then do the arithmetic independently.
+    bounds = block_bounds(video.size)
+    noise = np.empty(video.size, np.float32)
+    for index, generator in enumerate(block_generators(np.random.default_rng(0))):
+        low, high = bounds[index], bounds[index + 1]
+        noise[low:high] = generator.standard_normal(high - low, dtype=np.float32)
+    reference = noise.reshape(video.shape) * (0.5 * 255.0) + video
+
+    assert np.array_equal(augmented, np.clip(np.rint(reference), 0, 255).astype(np.uint8))
+
+
+@pytest.mark.parametrize(
+    "name, params",
+    [
+        ("noise.gaussian", {"sigma": 0.05, "device": "cpu"}),
+        ("noise.shot", {"strength": 0.05, "device": "cpu"}),
+        ("noise.blur", {"radius": 1.5}),
+        ("noise.compression", {"quality": 30.0}),
+    ],
+)
+def test_running_blocks_in_parallel_does_not_change_a_pixel(monkeypatch, name, params):
+    """The thread pool is a speed choice, so crossing its threshold must be invisible."""
+    video = _detailed_video(frames=8, size=48)
+    augmenter = build_augmenter(name, **params)
+
+    monkeypatch.setattr(accelerator, "_PARALLEL_MIN_ELEMENTS", 0)
+    parallel, _ = augmenter(video, rng=np.random.default_rng(3))
+    monkeypatch.setattr(accelerator, "_PARALLEL_MIN_ELEMENTS", 1 << 62)
+    serial, _ = augmenter(video, rng=np.random.default_rng(3))
+
+    np.testing.assert_array_equal(parallel, serial)
 
 
 @pytest.mark.parametrize("value", [16, 64, 144])

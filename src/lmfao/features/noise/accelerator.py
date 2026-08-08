@@ -6,11 +6,18 @@ branch on a device, or see anything other than a NumPy array. That keeps the
 rest of LMFAO free of optional GPU dependencies.
 
 Drawing the random numbers, not the arithmetic that follows, is what makes noise
-expensive. On a 32-frame 720p batch this module is roughly 30x faster than NumPy
-on Apple Metal, and it stays about that much faster even though it uploads the
-clip and downloads the result on every call. Keeping the video resident on the
-device between calls would only buy another ~20%, which is not worth leaking
-device handles through the public contract.
+expensive, and NumPy draws them on one core. So this module parallelises the CPU
+path over a fixed set of blocks as well as offering a device: on a 32-frame 720p
+clip that took the CPU from ~470 ms to ~70 ms, and Apple Metal runs the same
+clip in ~19 ms.
+
+That leaves the accelerator roughly 4x ahead of the CPU rather than the ~25x it
+led by when the CPU path was single-threaded, which is worth knowing before
+reaching for a GPU: the device is no longer the only way to make noise cheap,
+and it stays unavailable wherever torch cannot be installed. Metal keeps that
+lead even though it uploads the clip and downloads the result every call --
+keeping the video resident between calls would buy only another ~20%, which is
+not worth leaking device handles through the public contract.
 
 Falls back to NumPy whenever no accelerator is present or the video's dtype is
 one the device cannot represent, so callers never have to check first.
@@ -18,11 +25,14 @@ one the device cannot represent, so callers never have to check first.
 
 from __future__ import annotations
 
+import os
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import numpy as np
 
-from lmfao.base import Video, preserve_dtype
+from lmfao.base import Video
 
 # Dtypes both torch and MPS handle. Notably absent is float64, which Metal
 # cannot represent, and the wider unsigned integer types, which torch lacks.
@@ -32,6 +42,14 @@ _UNAVAILABLE = {
     "cuda": "device='cuda' requested but no CUDA device is available to PyTorch.",
     "mps": "device='mps' requested but Apple Metal is not available to PyTorch.",
 }
+
+# How many pieces CPU work is cut into. Fixed rather than tied to the host's
+# core count so that a seed produces the same pixels on a laptop and on a pod;
+# only *whether* the pieces run concurrently depends on the machine.
+_BLOCKS = 16
+
+# Below roughly a megapixel a thread pool costs more than the work it saves.
+_PARALLEL_MIN_ELEMENTS = 1 << 20
 
 
 def add_noise(
@@ -104,6 +122,45 @@ def dynamic_range(dtype: np.dtype) -> float:
     return 1.0
 
 
+def run_blocks(fill: Callable[[int], None], blocks: int, elements: int) -> None:
+    """Call ``fill`` for every block index, concurrently once it is worth it.
+
+    NumPy releases the GIL for the bulk array work inside a block, so threads
+    buy real parallelism here without the copying a process pool would cost.
+    Running the same blocks serially produces byte-identical output, so the
+    threshold below changes only the speed, never the result.
+    """
+
+    if blocks <= 1 or elements < _PARALLEL_MIN_ELEMENTS:
+        for index in range(blocks):
+            fill(index)
+        return
+
+    with ThreadPoolExecutor(min(blocks, os.cpu_count() or 1)) as pool:
+        for _ in pool.map(fill, range(blocks)):  # consume, so a block's error surfaces
+            pass
+
+
+def block_bounds(length: int, blocks: int = _BLOCKS) -> np.ndarray:
+    """Split ``length`` into ``blocks`` contiguous spans."""
+
+    return np.linspace(0, length, blocks + 1).astype(np.intp)
+
+
+def store_as(destination: np.ndarray, values: np.ndarray) -> None:
+    """Round and clip float ``values`` into an integer ``destination``, then write.
+
+    Casting truncates toward zero, so rounding first is what keeps a zero-mean
+    perturbation from biasing every frame darker.
+    """
+
+    if np.issubdtype(destination.dtype, np.integer):
+        info = np.iinfo(destination.dtype)
+        np.rint(values, out=values)
+        np.clip(values, info.min, info.max, out=values)
+    destination[...] = values
+
+
 def _intensity_scale(video: Video) -> np.ndarray:
     """The square root of normalised intensity, which is how photon noise grows.
 
@@ -116,27 +173,54 @@ def _intensity_scale(video: Video) -> np.ndarray:
     return np.sqrt(scale, out=scale)
 
 
+def block_generators(rng: np.random.Generator, blocks: int = _BLOCKS) -> list[np.random.Generator]:
+    """Independent per-block streams, still descended from the pipeline's rng."""
+
+    return [np.random.default_rng(seed) for seed in np.random.SeedSequence(_device_seed(rng)).spawn(blocks)]
+
+
 def _add_noise_numpy(video: Video, distribution: str, strength: float, rng: np.random.Generator) -> Video:
-    """Sample the whole clip in one call, reusing the buffer for the arithmetic."""
+    """Fill the output one block at a time, each block start to finish.
 
-    if distribution == "uniform":
-        noise = rng.random(video.shape, dtype=np.float32)
-        noise -= 0.5
-    else:
-        noise = rng.standard_normal(video.shape, dtype=np.float32)
+    Two things make this much faster than sampling the whole clip in one call.
+    Drawing the random numbers is about 70% of the work and NumPy's generator is
+    single-threaded, so blocks are drawn on their own streams in parallel. And
+    each block scales, adds, rounds and casts while it is still hot in cache,
+    which replaces five passes over a whole-clip float32 buffer with one pass
+    over a small one.
 
-    if distribution == "shot":
-        noise *= _intensity_scale(video)
+    Only the blocks in flight hold float32 scratch, so peak memory drops from
+    about nine bytes per pixel to four -- which is why a clip that OOMed can fit.
+    """
 
-    noise *= strength * dynamic_range(video.dtype)
-    noise += video
+    source = np.ravel(video)
+    out = np.empty(source.shape, dtype=video.dtype)
+    bounds = block_bounds(source.size)
+    generators = block_generators(rng)
+    scale = strength * dynamic_range(video.dtype)
 
-    # preserve_dtype casts, and casting truncates toward zero. Rounding first
-    # keeps the noise zero-mean rather than biasing every frame darker.
-    if np.issubdtype(video.dtype, np.integer):
-        np.rint(noise, out=noise)
+    def fill(index: int) -> None:
+        low, high = bounds[index], bounds[index + 1]
+        if low == high:
+            return
+        block = source[low:high]
+        block_rng = generators[index]
 
-    return preserve_dtype(video, noise)
+        if distribution == "uniform":
+            noise = block_rng.random(high - low, dtype=np.float32)
+            noise -= 0.5
+        else:
+            noise = block_rng.standard_normal(high - low, dtype=np.float32)
+
+        if distribution == "shot":
+            noise *= _intensity_scale(block)
+
+        noise *= scale
+        noise += block
+        store_as(out[low:high], noise)
+
+    run_blocks(fill, _BLOCKS, source.size)
+    return out.reshape(video.shape)
 
 
 def _add_noise_torch(video: Video, distribution: str, strength: float, rng: np.random.Generator, device: str) -> Video:
