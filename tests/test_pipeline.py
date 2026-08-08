@@ -17,7 +17,10 @@ def test_registered_augmenters_are_visible_in_hub():
         "lighting.brightness",
         "lighting.color_temperature",
         "lighting.contrast",
+        "noise.blur",
+        "noise.compression",
         "noise.gaussian",
+        "noise.shot",
         "noise.uniform",
         "occlusion.border_intrusion",
         "occlusion.moving_box",
@@ -35,7 +38,7 @@ def test_registered_augmenters_are_visible_in_hub():
     for name in ("lighting.brightness", "lighting.color_temperature", "lighting.contrast"):
         assert "lighting" in info_by_name[name].tags
 
-    for name in ("noise.gaussian", "noise.uniform"):
+    for name in ("noise.blur", "noise.compression", "noise.gaussian", "noise.shot", "noise.uniform"):
         assert "noise" in info_by_name[name].tags
 
     for name in ("occlusion.border_intrusion", "occlusion.moving_box", "occlusion.sequence_box"):

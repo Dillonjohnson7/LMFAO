@@ -97,7 +97,8 @@ never has to hold the whole dataset in memory.
 
 - **lighting:** `lighting.brightness`, `lighting.contrast`,
   `lighting.color_temperature`
-- **noise:** `noise.gaussian`, `noise.uniform`
+- **noise:** `noise.gaussian`, `noise.uniform`, `noise.shot`, `noise.blur`,
+  `noise.compression`
 - **occlusion:** `occlusion.sequence_box`, `occlusion.border_intrusion`,
   `occlusion.moving_box`
 - **spatial:** `spatial.random_crop`

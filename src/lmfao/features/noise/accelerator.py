@@ -104,14 +104,29 @@ def dynamic_range(dtype: np.dtype) -> float:
     return 1.0
 
 
+def _intensity_scale(video: Video) -> np.ndarray:
+    """The square root of normalised intensity, which is how photon noise grows.
+
+    Scaling a unit-variance draw by this turns signal-independent grain into
+    shot noise: bright pixels get noisy, dark ones stay comparatively clean.
+    """
+
+    scale = np.asarray(video, dtype=np.float32) / dynamic_range(video.dtype)
+    np.clip(scale, 0.0, 1.0, out=scale)
+    return np.sqrt(scale, out=scale)
+
+
 def _add_noise_numpy(video: Video, distribution: str, strength: float, rng: np.random.Generator) -> Video:
     """Sample the whole clip in one call, reusing the buffer for the arithmetic."""
 
-    if distribution == "gaussian":
-        noise = rng.standard_normal(video.shape, dtype=np.float32)
-    else:
+    if distribution == "uniform":
         noise = rng.random(video.shape, dtype=np.float32)
         noise -= 0.5
+    else:
+        noise = rng.standard_normal(video.shape, dtype=np.float32)
+
+    if distribution == "shot":
+        noise *= _intensity_scale(video)
 
     noise *= strength * dynamic_range(video.dtype)
     noise += video
@@ -138,11 +153,14 @@ def _add_noise_torch(video: Video, distribution: str, strength: float, rng: np.r
     frames = torch.as_tensor(video, device=device)
     shape = tuple(video.shape)
 
-    if distribution == "gaussian":
-        noise = torch.randn(shape, generator=generator, device=device, dtype=torch.float32)
-    else:
+    if distribution == "uniform":
         noise = torch.rand(shape, generator=generator, device=device, dtype=torch.float32)
         noise -= 0.5
+    else:
+        noise = torch.randn(shape, generator=generator, device=device, dtype=torch.float32)
+
+    if distribution == "shot":
+        noise *= (frames / dynamic_range(video.dtype)).clamp_(0.0, 1.0).sqrt_()
 
     noise *= strength * dynamic_range(video.dtype)
     noise += frames

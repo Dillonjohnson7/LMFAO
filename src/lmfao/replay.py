@@ -15,6 +15,13 @@ import numpy as np
 from lmfao.base import Video
 from lmfao.registry import build_augmenter
 
+# Noises drawn per pixel, and the keyword each one records its strength under.
+_SAMPLED_NOISE = {
+    "noise.gaussian": "sigma",
+    "noise.uniform": "amplitude",
+    "noise.shot": "strength",
+}
+
 
 def replay_augmentation_history(
     video: Video,
@@ -66,20 +73,27 @@ def _replay_one(
         )
         return aug(video, {}, rng)[0]
 
-    if name == "noise.gaussian":
+    if name in _SAMPLED_NOISE:
         # Same strength; independent realization (correct for multi-sensor noise).
-        kwargs = {"sigma": float(params["sigma"])}
+        # Each records its strength under its own keyword, so look it up by name.
+        key = _SAMPLED_NOISE[name]
+        kwargs: dict[str, Any] = {key: float(params[key])}
         if "device" in params and params["device"] not in (None, "auto"):
             kwargs["device"] = params["device"]
         aug = build_augmenter(name, **kwargs)
         return aug(video, {}, rng)[0]
 
-    if name == "noise.uniform":
-        # Uniform noise records its strength as amplitude, not sigma.
-        kwargs = {"amplitude": float(params["amplitude"])}
-        if "device" in params and params["device"] not in (None, "auto"):
-            kwargs["device"] = params["device"]
-        aug = build_augmenter(name, **kwargs)
+    if name == "noise.compression":
+        # Deterministic given quality, and quality is geometry-independent.
+        aug = build_augmenter(name, quality=float(params["quality"]))
+        return aug(video, {}, rng)[0]
+
+    if name == "noise.blur":
+        # Radius is in pixels, so a wider stream needs a proportionally wider one.
+        radius = float(params["radius"])
+        if src_hw is not None and src_hw[1] > 0:
+            radius *= video.shape[2] / src_hw[1]
+        aug = build_augmenter(name, radius=max(radius, 1e-3))
         return aug(video, {}, rng)[0]
 
     if name == "spatial.random_crop":

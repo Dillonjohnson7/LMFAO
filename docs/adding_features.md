@@ -87,6 +87,7 @@ Use dotted names so the central hub stays flat but browsable:
 - `lighting.shadow`
 - `lighting.rgb_shift`
 - `noise.gaussian`
+- `noise.compression`
 - `occlusion.sequence_box`
 - `occlusion.border_intrusion`
 - `occlusion.moving_box`

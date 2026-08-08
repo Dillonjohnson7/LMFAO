@@ -45,8 +45,8 @@ Four entry points, all native to the LeRobot v3 on-disk format:
 | `lmfao inspect` | ✅ working | summarize any LeRobot dataset without decoding video |
 | `lmfao generate` | ⚠️ experimental | synthesize novel camera views (low-res reference renderer) |
 
-`augment` is the mature command: full 6-effect pipeline (lighting ×3, noise ×2,
-occlusion, spatial crop), deterministic **magnitude sweeps** (e.g. brightness
+`augment` is the mature command: full pipeline (lighting ×3, noise ×5,
+occlusion ×3, spatial crop), deterministic **magnitude sweeps** (e.g. brightness
 ±5/±10/±15% with a projected video count), `--variants` N seasoned copies,
 `--include-original`, a **streaming one-episode-per-file writer** (bounded memory),
 and crash-safe **`--resume`** (checkpoint per source episode; verified bit-identical

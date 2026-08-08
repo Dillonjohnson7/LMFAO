@@ -204,6 +204,14 @@ _STEP_AUGS: dict[str, dict] = {
                            desc="sensor grain", max_steps=None),
     "noise.uniform": dict(param="amplitude", base=0.0, inc=0.02, bidir=False, scale=100, unit="%",
                           desc="quantisation noise", max_steps=None),
+    "noise.shot": dict(param="strength", base=0.0, inc=0.02, bidir=False, scale=100, unit="%",
+                       desc="photon shot noise", max_steps=None),
+    "noise.blur": dict(param="radius", base=0.0, inc=0.5, bidir=False, scale=1, unit=" px",
+                       desc="defocus blur", max_steps=None),
+    # Quality counts down from lossless, so a step is damage added, not removed;
+    # past step 9 the table would hit quality 0, which no encoder defines.
+    "noise.compression": dict(param="quality", base=100.0, inc=-10.0, bidir=False, scale=1, unit="",
+                              desc="MJPEG artefacts", max_steps=9),
 }
 
 
