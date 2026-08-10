@@ -10,6 +10,7 @@ goal; v1 buckets remain valid for the held-out robustness line.
 | Role | control, same as v1 stock | nominal-performance arm | robustness arm |
 | Brightness / contrast / color temp | — | ✓ | — |
 | Gaussian noise (σ=0.03) | — | ✓ | — |
+| Shot / compression / blur noise (p=0.5 / 0.5 / 0.3) | — | ✓ | — |
 | Steady camera shift (±4 px, one fixed offset per episode) | — | ✓ | — |
 | Per-frame camera shake (±8 px jitter) | — | — | ✓ |
 | Border occluder (p=0.7) | — | — | ✓ |
@@ -70,9 +71,10 @@ precision.
 Two total:
 
 - `configs/training/buckets/v2_steady.json` — brightness + contrast + color
-  temperature + gaussian σ=0.03, plus an episode-constant ±4 px crop
-  (remount simulation). Nothing in this bucket moves task geometry within an
-  episode; the primary nominal-performance recipe.
+  temperature + gaussian σ=0.03 (always), plus shot / compression / blur
+  noise (p=0.5/0.5/0.3, so each variant gets a different mild mix), plus an
+  episode-constant ±4 px crop (remount simulation). Everything in this
+  bucket is position-preserving; the primary nominal-performance recipe.
 - `configs/training/buckets/v2_jitter_occlusion.json` — the aggressive arm:
   v1-style per-frame ±8 px crop jitter plus the three occluders (border
   intrusion p=0.7, sequence box p=0.5, moving box p=0.5). Expected to cost
