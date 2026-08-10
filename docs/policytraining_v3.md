@@ -941,6 +941,62 @@ Per trial record:
 An augmentation family is useful when it beats stock in its matching held-out
 condition without collapsing nominal success.
 
+### 11.3 Diagnosis: why augmentation didn't move the nominal number (2026-08-09)
+
+Full frame-by-frame audit of all 14 scored failure clips (front view, tracking
+the puck; wrist confirmation where ambiguous) plus a joint-pose analysis of
+every demo and rollout episode (`so101/eval/diagnose_close.py`). Four pillars:
+
+1. **The nominal layout was the control arm, and it returned the expected
+   null.** Augmentation buys robustness under distribution shift; nominal has
+   no shift, so parity (73/67/67, indistinguishable at n=15) is what theory
+   predicts. The runs that test the actual hypothesis are the §11.2
+   conditions, none of which have run yet.
+2. **The dominant failure is outside the augmentation's action space.** All
+   17 verified failures (14 scored + 3 unscored stock) are the same ~1 cm
+   missed close followed by an empty-jaw place script. LMFAO's ADJUST path is
+   pixel-only — `observation.state` and `action` are copied unchanged — so it
+   trains *invariance* ("same action despite pixel changes"), while the
+   bottleneck demands *sensitivity* to sub-cm puck displacement. Two v1
+   ingredients plausibly hurt precision: per-frame ±8 px crop jitter (≈ the
+   miss scale on the front camera, paired with unchanged labels) and
+   occluders that can cover the wrist-view close.
+3. **The close is dead-reckoned, and its scatter is the size of the
+   tolerance.** ACT ran `chunk_size=100`, `n_action_steps=100`,
+   `n_obs_steps=1`, no temporal ensembling: the policy commits 3.3 s of
+   actions from one observation, so the sub-second close executes open-loop.
+   Rollout close poses scatter 1.5–6° per joint (≈1–3 cm at the gripper)
+   against a ~1 cm capture tolerance — success is partly placement luck.
+   Close-pose offsets vs the demo mean are all within ~1.3σ, so it is not a
+   gross calibration offset. Stock/full failures are directionally random;
+   occlusion's five failures share one systematic offset (shoulder_lift
+   +8.3°, elbow −9.7°, t≈5) and the earliest close time (3.7 s vs stock
+   4.3 s, demos 4.6 s) — the signature of closing blind, consistent with
+   occluders masking the close in training. Small n; suggestive, not
+   settled.
+4. **Half the protocol never reached the robot, and the instruments
+   misled.** Spatial OOMed twice, lighting was killed at epoch 14, noise
+   OOMed at epoch 4 — three of six planned policies never ran. And the
+   review harness's proxy metrics ("held in band", "puck moved") produced
+   the phantom rim-drop / mid-air-release failure modes corrected in §11.0:
+   band time registers for empty-jaw transits and puck-moved registers
+   nudges, so neither implies a grasp.
+
+Also measured: demo close poses span 63–75° in shoulder_lift/elbow across
+the 40 demos (puck placed all over the workspace), so local density at the
+nominal eval spot is sparse; and the augmented buckets' higher final losses
+(0.061–0.068 vs stock 0.053) track repetition, not quality — 100k steps is
+~31 passes over stock's 26k frames but only ~3.4 passes over each bucket's
+234k frames.
+
+Consequences, ranked by leverage: (1) grasp verification + re-approach —
+every failure on record is an unretried miss, and ep9 proves a second
+approach converts; (2) re-plan at the close (`n_action_steps` 100 → ~25,
+inference-time, testable on existing policies via `offline_eval.py` NSTEP);
+(3) v2 data recipes — episode-constant small geometry, no occluders on the
+nominal line, 67/33 stock-anchored mix, recovery demos in recollection. The
+v2 protocol implementing all of this is `docs/RECIPE_V2.md`.
+
 ---
 
 ## 12. Artifact catalog (completed work)

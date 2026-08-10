@@ -1,6 +1,6 @@
 # LMFAO — State of the Art & Next Steps
 
-Living status doc. Last updated 2026-08-05. This is the single source of truth for
+Living status doc. Last updated 2026-08-09. This is the single source of truth for
 where the project is, what's proven, what we learned, and what to do next.
 
 LMFAO is a **command-line tool for augmenting robot-learning datasets**: point it
@@ -177,22 +177,25 @@ delete after finishing the swap on any servers).
 - Consider enabling GitHub **push protection / secret scanning** on the repo
   (Settings → Code security) so GitHub itself blocks future secret pushes.
 
-**B. Comparative eval run (the real goal)** — scaffolding landed
-Everything is proven at smoke scale. The next experiment is **not** reusing
-`pick_place_v2` — it is:
+**B. Comparative eval run (the real goal)** — v1 done, v2 protocol baked
+The v1 run completed the nominal layout: stock 11/15, occlusion 10/15, full
+10/15 (spatial/lighting/noise never finished training). A frame-by-frame
+audit of all 14 failure clips (2026-08-09) corrected the failure-mode table
+(**every** scored failure is the same ~1 cm missed close + empty-jaw place
+script — the rim-drop/mid-air-release entries were front-camera misreads)
+and the diagnosis says why nominal didn't move: pixel augmentation trains
+invariance, the bottleneck is grasp precision, and the close is executed
+open-loop inside a 100-action chunk. Full writeup: `policytraining_v3.md`
+§11.0 + §11.3.
 
-1. **Recollect** fresh SO101 demos (`so101/rec` / `scripts/record_demos.sh` on the robot box)
-2. **Augment** with the CLI into matched buckets (stock / lighting / noise /
-   occlusion / spatial / full) via `scripts/augment_eval_buckets.sh`
-3. **Train** one ACT policy per bucket with identical hparams
-   (`scripts/train_eval_buckets.sh` on a CUDA pod)
-4. **Compare** physical rollout success under held-out lighting / framing /
-   occlusion — that is how we tell whether the CLI helps
-
-Checklist + table: `docs/TRAINING_RUN.md`. Bucket configs:
-`configs/training/buckets/*.json`. Transfer with `COPYFILE_DISABLE=1 tar` or
-`huggingface-cli upload` (avoid AppleDouble). This cloud agent has **no robot
-and no GPU** — recording is on the SO101 workstation; training on RunPod.
+The **v2 protocol** (`docs/RECIPE_V2.md`) is implemented, tested (261
+passing), and deployed on the NUC: two new buckets (`v2_steady` —
+appearance + episode-constant remount crop; `v2_jitter_occlusion` — the
+aggressive robustness arm), a 67/33 stock-anchored data mix (new
+`--original-copies` flag), and a recollection spec (40 demos: 8 with
+deliberate miss + re-approach, 24 dense near the eval spot, 8 spread).
+Next physical step: record the 40 demos, then the day-of runbook in
+RECIPE_V2.md (record → buckets → pod training → 15–20 trials/policy).
 
 **C. `lmfao generate` quality (experimental → trainable)**
 The novel-view path produces 96×54, blurry, assumed-pose frames. Making it
@@ -214,7 +217,11 @@ multi-week Phase 0-1 in `v2_mini_world_generator_plan.md`. Genuine research risk
 
 ## Related docs
 - `README.md` — user-facing CLI quickstart.
-- `docs/TRAINING_RUN.md` — full-scale augment → ACT checklist and scripts.
+- `docs/RECIPE_V2.md` — current (v2) training-run protocol + day-of runbook.
+- `docs/policytraining_v3.md` — v3/v1 experiment log: training, rollouts,
+  failure audit (§11.0), and the diagnosis of the nominal null result (§11.3).
+- `docs/TRAINING_RUN.md` — v1 experiment design (historical; superseded by
+  RECIPE_V2.md for the next run).
 - `docs/v2_mini_world_generator_plan.md` — the GENERATE/splat roadmap (design doc,
   not implemented).
 - `docs/adding_features.md` — contributor guide for new augmenters.
