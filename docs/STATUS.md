@@ -218,6 +218,8 @@ multi-week Phase 0-1 in `v2_mini_world_generator_plan.md`. Genuine research risk
 ## Related docs
 - `README.md` — user-facing CLI quickstart.
 - `docs/RECIPE_V2.md` — current (v2) training-run protocol + day-of runbook.
+- `docs/INCEPTION_BREV.md` — training-compute runbook for our NVIDIA
+  Inception (Brev) credits: redemption, instance setup, data in/out.
 - `docs/policytraining_v3.md` — v3/v1 experiment log: training, rollouts,
   failure audit (§11.0), and the diagnosis of the nominal null result (§11.3).
 - `docs/TRAINING_RUN.md` — v1 experiment design (historical; superseded by

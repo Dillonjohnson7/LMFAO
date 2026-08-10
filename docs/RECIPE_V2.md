@@ -181,16 +181,25 @@ BUCKETS="v2_steady v2_jitter_occlusion" \
 # 3. SANITY-CHECK THE MIX (NUC) — each bucket: 120 episodes, ~2/3 stamped
 #    augmented=False. `lmfao inspect <bucket> --episodes` shows the flags.
 
-# 4. TRANSFER (NUC → CUDA pod) — resumable rsync, see
-#    docs/policytraining_v3.md §"Data moved" for the pod mechanics:
-rsync -rt --partial --append-verify \
+# 4. TRANSFER (NUC → GPU instance) — we train on NVIDIA Inception compute
+#    (Brev) for this run; full setup/transfer/teardown runbook:
+#    docs/INCEPTION_BREV.md. Short version: `brev create` an L40S instance
+#    with scripts/brev_setup.sh as the setup script, then:
+rsync -aP --exclude '._*' \
   ~/LMFAO/so101/datasets/eval_buckets_v4/ \
-  <pod>:/workspace/data/eval_buckets_v4/
+  lmfao-train:/home/ubuntu/workspace/data/eval_buckets_v4/
+#    then low-GOP re-encode on the instance copies (policytraining_v3.md §9.3):
+#    ~/envs/lerobot06/bin/python scripts/reencode_low_gop.py \
+#      ~/workspace/data/eval_buckets_v4/*/
 
-# 5. TRAIN (pod) — identical recipe across buckets:
-OUT_ROOT=/workspace/data/eval_buckets_v4 \
+# 5. TRAIN (Brev instance, inside tmux) — identical recipe across buckets:
+OUT_ROOT=$HOME/workspace/data/eval_buckets_v4 \
+RUNS_ROOT=$HOME/workspace/runs/eval_buckets_v4 \
 BUCKETS="stock v2_steady v2_jitter_occlusion" \
+LEROBOT_BIN=$HOME/envs/lerobot06/bin/lerobot-train \
 ./scripts/train_eval_buckets.sh
+#    ~4.3 h/policy at v1 throughput; ~13–15 GPU-hours total. Extract
+#    checkpoints BEFORE stopping the instance (INCEPTION_BREV.md §8).
 
 # 6. RETAIN/UPLOAD — policy roots + datasets per policytraining_v3.md
 #    "Retain" steps (HF token passed in-memory from the Mac).
