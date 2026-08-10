@@ -32,3 +32,4 @@ pod_key*
 # local agent/session artifacts
 .cursor_transcript_extract.txt
 .cursor*
+.tmp_frames/

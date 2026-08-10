@@ -18,7 +18,12 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 STOCK="${STOCK:?set STOCK to the freshly recorded LeRobot dataset root}"
 OUT_ROOT="${OUT_ROOT:-${LMFAO_DATA_ROOT:-/workspace/data}/eval_buckets}"
 BUCKETS="${BUCKETS:-lighting noise occlusion spatial full}"
-VARIANTS="${VARIANTS:-8}"
+# Originals are oversampled so each bucket trains mostly on the nominal
+# distribution: COPIES/(COPIES+VARIANTS) = 2/3 -> 67% stock, 33% augmented.
+# 2+1 (not 4+2) so each unique augmented variant gets ~2x the training
+# repetition at the same ratio.
+VARIANTS="${VARIANTS:-1}"
+ORIGINAL_COPIES="${ORIGINAL_COPIES:-2}"
 SEED="${SEED:-7}"
 CONFIG_DIR="${CONFIG_DIR:-${ROOT}/configs/training/buckets}"
 
@@ -46,13 +51,14 @@ for bucket in $BUCKETS; do
     exit 1
   fi
   echo
-  echo "=== bucket=${bucket} variants=${VARIANTS} ==="
+  echo "=== bucket=${bucket} variants=${VARIANTS} original_copies=${ORIGINAL_COPIES} ==="
   lmfao augment \
     --input "$STOCK" \
     --output "$out" \
     --config "$cfg" \
     --variants "$VARIANTS" \
     --include-original \
+    --original-copies "$ORIGINAL_COPIES" \
     --seed "$SEED" \
     --resume
   lmfao inspect "$out" --episodes | head -n 20 || true

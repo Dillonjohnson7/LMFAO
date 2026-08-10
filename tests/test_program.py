@@ -31,6 +31,54 @@ def test_augment_variants_and_originals_counts():
     assert len(aug) == 6 and len(orig) == 2
 
 
+def test_augment_original_copies_oversamples_nominal():
+    sources = _plain(2)
+    ts = augment_episodes(
+        sources, _PIPE, variants=2, seed=5, include_original=True, original_copies=4
+    )
+    aug = [e for e in ts.episodes if e.metadata.get("augmented")]
+    orig = [e for e in ts.episodes if not e.metadata.get("augmented")]
+    assert len(orig) == 8 and len(aug) == 4  # 2:1 original/augmented
+    # Copies are stamped so provenance stays distinguishable, and each copy's
+    # frames are the untouched source frames.
+    assert sorted(e.metadata["original_copy"] for e in orig) == [0, 0, 1, 1, 2, 2, 3, 3]
+    for source in sources:
+        matches = [
+            e for e in orig
+            if e.metadata.get("episode_index") == source.metadata["episode_index"]
+        ]
+        assert len(matches) == 4
+        assert all(np.array_equal(e.frames, source.frames) for e in matches)
+
+
+def test_augment_original_copies_streaming_matches_batch():
+    source = _plain(1)[0]
+    batch = augment_episodes(
+        [source], _PIPE, variants=2, seed=5, include_original=True, original_copies=3
+    )
+    streamed = list(
+        iter_augment_episode(
+            source,
+            _PIPE,
+            variants=2,
+            seed=5,
+            include_original=True,
+            original_copies=3,
+            source_index=0,
+        )
+    )
+    assert len(streamed) == len(batch.episodes)
+    for actual, expected in zip(streamed, batch.episodes):
+        assert actual.metadata == expected.metadata
+
+
+def test_augment_original_copies_must_be_positive():
+    with pytest.raises(ValueError, match="original_copies must be >= 1"):
+        augment_episodes(
+            _plain(1), _PIPE, variants=1, seed=5, include_original=True, original_copies=0
+        )
+
+
 def test_augment_applies_pipeline_and_preserves_state():
     ts = augment_episodes(_plain(1), _PIPE, variants=1, seed=1)
     ep = ts.episodes[0]

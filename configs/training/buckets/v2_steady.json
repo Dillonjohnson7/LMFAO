@@ -1,0 +1,7 @@
+[
+  {"name": "lighting.brightness", "params": {}, "probability": 1.0},
+  {"name": "lighting.contrast", "params": {}, "probability": 1.0},
+  {"name": "lighting.color_temperature", "params": {}, "probability": 1.0},
+  {"name": "noise.gaussian", "params": {"sigma": 0.03}, "probability": 1.0},
+  {"name": "spatial.random_crop", "params": {"pad": 4, "temporal_mode": "constant"}, "probability": 1.0}
+]

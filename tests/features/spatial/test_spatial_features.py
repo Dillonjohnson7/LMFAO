@@ -63,6 +63,7 @@ def test_random_crop_records_metadata():
         "shift_y": [-1, -1, -1, -1],
         "pad": 4,
         "pad_mode": "zero",
+        "temporal_mode": "per_frame",
     }
 
 
@@ -129,6 +130,52 @@ def test_random_crop_config_validation():
     with pytest.raises(ValueError, match="pad_mode must be one of"):
         build_augmenter("spatial.random_crop", pad_mode="blur")
 
+    with pytest.raises(ValueError, match="temporal_mode must be"):
+        build_augmenter("spatial.random_crop", temporal_mode="weekly")
+
     augmenter = build_augmenter("spatial.random_crop", pad=8)
     with pytest.raises(ValueError, match="must be smaller than both height"):
         augmenter(_video(size=8))
+
+
+def test_random_crop_constant_mode_holds_one_shift_for_whole_episode():
+    video = _video(frames=50)
+    augmenter = build_augmenter("spatial.random_crop", pad=4, temporal_mode="constant")
+
+    _, metadata = augmenter(video)
+
+    params = metadata["augmentation_params"]["spatial.random_crop"]
+    assert params["temporal_mode"] == "constant"
+    assert len(set(params["shift_x"])) == 1
+    assert len(set(params["shift_y"])) == 1
+    assert all(-4 <= value <= 4 for value in params["shift_x"])
+    assert all(-4 <= value <= 4 for value in params["shift_y"])
+
+
+def test_random_crop_constant_mode_moves_every_frame_identically():
+    frames, size, channels = 12, 20, 3
+    video = np.zeros((frames, size, size, channels), dtype=np.uint8)
+    video[:, 10, 10, 0] = 255
+
+    augmenter = build_augmenter("spatial.random_crop", pad=6, pad_mode="zero", temporal_mode="constant")
+    augmented, _ = augmenter(video)
+
+    positions = set()
+    for frame_index in range(frames):
+        frame_positions = list(zip(*np.nonzero(augmented[frame_index, ..., 0])))
+        assert len(frame_positions) == 1
+        positions.add(frame_positions[0])
+    assert len(positions) == 1
+
+
+def test_random_crop_constant_mode_is_reproducible_with_seed():
+    video = _video(frames=20)
+    pipeline = AugmentationPipeline.from_config(
+        [{"name": "spatial.random_crop", "params": {"pad": 4, "temporal_mode": "constant"}}],
+        seed=71,
+    )
+
+    first, _ = pipeline(video)
+    second, _ = pipeline(video)
+
+    np.testing.assert_array_equal(first, second)

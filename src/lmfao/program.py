@@ -121,6 +121,7 @@ def augment_episodes(
     variants: int = 1,
     seed: int | None = None,
     include_original: bool = False,
+    original_copies: int = 1,
     index_base: int = 0,
 ) -> TrainingSet:
     """Apply the ADJUST pixel pipeline to real episodes (no miniworld synthesis).
@@ -140,6 +141,12 @@ def augment_episodes(
     include_original:
         When True, each source's un-augmented frames are emitted (stamped
         ``augmented=False``) before its variants.
+    original_copies:
+        How many copies of the original to emit per source when
+        ``include_original`` is set (>= 1). Oversampling the originals
+        reweights the training mix toward the nominal distribution, e.g.
+        ``original_copies=2, variants=1`` yields a 67/33 original/augmented
+        ratio.
     index_base:
         Global index of the first episode in ``episodes``. Lets a caller process
         sources one at a time (streaming) and still derive the same per-episode
@@ -155,6 +162,7 @@ def augment_episodes(
                 variants=variants,
                 seed=seed,
                 include_original=include_original,
+                original_copies=original_copies,
                 source_index=index_base + i,
             )
         )
@@ -168,6 +176,7 @@ def iter_augment_episode(
     variants: int = 1,
     seed: int | None = None,
     include_original: bool = False,
+    original_copies: int = 1,
     source_index: int = 0,
 ) -> Iterator[Episode]:
     """Yield one source's original/variants one at a time.
@@ -179,14 +188,19 @@ def iter_augment_episode(
     """
     if variants < 1:
         raise ValueError("variants must be >= 1")
+    if original_copies < 1:
+        raise ValueError("original_copies must be >= 1")
     steps = list(pipeline_config or [])
     if not steps:
         raise ValueError("no augmentations configured: the pipeline is empty")
 
     if include_original:
-        keep = episode.with_frames(episode.frames)
-        keep.metadata["augmented"] = False
-        yield keep
+        for copy_index in range(original_copies):
+            keep = episode.with_frames(episode.frames)
+            keep.metadata["augmented"] = False
+            if original_copies > 1:
+                keep.metadata["original_copy"] = int(copy_index)
+            yield keep
     for variant in range(variants):
         # A distinct index per (source, variant) so no two seasonings share an
         # RNG stream; global source index keeps streaming == in-memory.

@@ -506,7 +506,8 @@ def run_wizard() -> int:
             ns = argparse.Namespace(
                 input=src["path"], output=output, config=cfg_path,
                 demo=(src["kind"] == "demo"), variants=1,
-                include_original=keep, seed=seed, video_key=src["video_key"],
+                include_original=keep, original_copies=1, seed=seed,
+                video_key=src["video_key"],
                 write_video_key=None, limit=(limit or None),
                 max_frames=(max_frames or None), overwrite=True,
             )

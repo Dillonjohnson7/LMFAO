@@ -776,8 +776,12 @@ Training loss is not the experiment result. Use physical success rate.
 | policy | placed | failed at the grasp | failed after grasping | run |
 |---|---|---|---|---|
 | stock | **11/15 (73%)** | 4 | 0 | `2026-08-06_1833_stock` |
-| occlusion | **10/15 (67%)** | 3 | 2 | `2026-08-06_1928_occlusion` |
-| full | **10/15 (67%)** | 4 | 1 | `2026-08-06_2034_full` |
+| occlusion | **10/15 (67%)** | 5 | 0 | `2026-08-06_1928_occlusion` |
+| full | **10/15 (67%)** | 5 | 0 | `2026-08-06_2034_full` |
+
+(Failure-mode columns corrected 2026-08-09 after frame-by-frame re-audit of
+all 14 failure clips — see the paragraph below. The placed/failed counts are
+unchanged.)
 
 All three land within one trial of each other, which at n=15 is
 indistinguishable. **No augmentation family beat stock in the nominal layout,
@@ -798,14 +802,38 @@ same policy configuration; the only difference is the training corpus.
 Per-episode clips and a synced viewer are under each run's `clips/` and
 `web/index.html` (`so101/eval/make_viewer.py`).
 
-Where they fail is more informative than the rate. Every stock failure was at
-the close — the grasp missing by roughly a centimetre. Both augmented policies
-failed that way too, but each also produced a failure stock never did:
-occlusion twice carried the puck to the box and dropped it short on the rim
-(the same failure v1 hit on its first-ever pick), and full once grasped the
-puck, carried it 13 cm, and released it nowhere near the box. So the augmented
-policies reach further into the task before failing, without converting that
-into a higher success rate.
+Where they fail is more informative than the rate, and the failure modes were
+re-audited frame-by-frame on 2026-08-09 (all 14 scored failure clips, tracking
+the puck in the front view; wrist confirmation where ambiguous). **Every
+scored failure of every policy is the same failure: the missed close** — the
+grasp missing by roughly a centimetre, the puck nudged rather than secured,
+and the policy running the rest of the script with empty jaws (see the note
+below). The puck never leaves the table in any of the 14. An earlier version
+of this paragraph claimed occlusion twice dropped the puck on the rim and full
+once released it mid-air away from the box; those were front-camera misreads
+of the empty-jaw dwell at the rim, and with them goes the claim that the
+augmented policies "reach further into the task." There is no evidence the
+families fail differently. Two review-harness caveats this exposed: "held in
+band" time registers for empty jaws transiting the carry band, and "puck
+moved" can reflect a nudge during the missed close — neither implies the puck
+was ever grasped.
+
+One more failure-behavior note, from frame-by-frame review (front + wrist) of
+the unscored `2026-08-06_2023_stock` run (3 episodes, all missed closes):
+after a miss, the policy does not re-attempt — it runs the rest of the script
+with empty jaws. It lifts, transports to the box, and dwells ~10 s pressing
+nothing against the rim, because there is no grasp-verification signal to tell
+it the puck was never secured; the puck stays on the table, knocked beside the
+box by the closing jaws. Two practical consequences. First, scoring this
+correctly requires tracking the *puck*, not the arm: in the front view the
+puck remains visible on the table for the entire trial, so a careful
+frame-by-frame watch is by itself sufficient to call the missed close (the
+wrist view confirms it directly — jaws closed on empty air). A reviewer who
+follows the arm instead will misread the empty-jaw dwell at the rim as a place
+failure. Second, the missed close is the single point of leverage: the one
+recovery on record (ep9 in §11.0.1) happened because a second approach attempt
+occurred, so a grasp-check / re-approach behavior addresses the dominant
+failure of every policy tested.
 
 Occlusion also behaves differently *after* succeeding: it keeps moving and
 grabs at empty air with the puck plainly sitting in the box, markedly more than

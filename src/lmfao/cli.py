@@ -209,6 +209,7 @@ def _job_signature(mode: str, payload: list, args: argparse.Namespace) -> str:
     key = json.dumps({
         "mode": mode, "payload": payload, "seed": args.seed,
         "variants": args.variants, "include_original": args.include_original,
+        "original_copies": getattr(args, "original_copies", 1),
         "video_key": args.video_key, "write_video_key": args.write_video_key,
         "max_frames": args.max_frames, "limit": args.limit, "demo": args.demo,
         "input": args.input,
@@ -225,6 +226,8 @@ def _augment(args: argparse.Namespace) -> int:
         raise CliError("--max-frames must be at least 1")
     if args.variants < 1:
         raise CliError("--variants must be at least 1")
+    if getattr(args, "original_copies", 1) < 1:
+        raise CliError("--original-copies must be at least 1")
 
     mode, payload = _load_augment_config(args.config)
     resume = getattr(args, "resume", False)
@@ -333,7 +336,8 @@ def _augment(args: argparse.Namespace) -> int:
         if mode == "sweep"
         else (lambda ep, k: iter_augment_episode(
             ep, payload, variants=args.variants, seed=args.seed,
-            include_original=args.include_original, source_index=k))
+            include_original=args.include_original,
+            original_copies=getattr(args, "original_copies", 1), source_index=k))
     )
     try:
         for k in range(start, n_source):
@@ -597,6 +601,10 @@ def build_parser() -> argparse.ArgumentParser:
                      help="number of independently-seasoned copies per source episode (default 1)")
     aug.add_argument("--include-original", action="store_true",
                      help="also emit the un-augmented source episodes (originals + variants)")
+    aug.add_argument("--original-copies", type=int, default=1,
+                     help="with --include-original, emit this many copies of each original "
+                          "(default 1); e.g. --original-copies 2 --variants 1 gives a "
+                          "67/33 original/augmented mix")
     aug.add_argument("--seed", type=int, default=None, help="base seed")
     aug.add_argument("--video-key", default=None, help="which camera stream to read")
     aug.add_argument("--write-video-key", default=None,
