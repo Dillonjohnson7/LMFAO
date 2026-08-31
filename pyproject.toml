@@ -45,6 +45,9 @@ target-version = "py39"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+# so101/ holds workcell hardware scripts (creep_test.py etc.) that import
+# torch/lerobot — not unit tests. Collecting them breaks CI (no torch there).
+addopts = "--ignore=so101"
 
 [tool.ruff.lint]
 select = [

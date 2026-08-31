@@ -20,6 +20,22 @@ SO101 teleop and guided data collection live under [`so101/`](so101/README.md)
 (`./so101/rec` — ENTER / keep / redo with an episode counter). Record there, then
 augment with the CLI below.
 
+## Training on augmented output: hold the chinchilla ratio
+
+Augmenting multiplies your dataset (e.g. `--variants 1 --include-original
+--original-copies 2` turns 50 episodes into 150). **Do not train the augmented
+set for the same step count as the source** — at equal steps, each sample is
+seen 1/3 as often, the augmented policy is undertrained, and any comparison
+against the source-trained policy is confounded. (We learned this at eval:
+stock 76% vs augmented 8% at equal 100k steps.)
+
+With model size fixed, the rule is: **hold EPOCHS — total passes over the
+data — constant or growing**, i.e. scale STEPS with dataset size. Both
+`scripts/train_act.sh` here and the m1 pipeline's `train.sh` support
+`EPOCHS=<n>`, which derives STEPS from the dataset's own frame count.
+`lmfao augment` prints the exact multiplier and guidance at the end of every
+run.
+
 ## The CLI
 
 | command | what it does |

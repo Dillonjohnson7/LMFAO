@@ -363,7 +363,31 @@ def _augment(args: argparse.Namespace) -> int:
     print(f"loaded {source_desc}")
     print(desc)
     print(f"wrote {writer.episodes_written} episodes -> {out}")
+    _print_chinchilla_guidance(n_source, writer.episodes_written)
     return 0
+
+
+def _print_chinchilla_guidance(n_source: int, n_out: int) -> None:
+    """Surface the training implication of growing the dataset.
+
+    Lesson learned the hard way (stock 76% vs v2_steady 8%, Aug 2026): training
+    an augmented dataset for the SAME step count as its source trains each
+    sample 1/multiplier as often — the augmented policy is undertrained, and
+    the comparison is confounded. With model size fixed, hold the
+    chinchilla-style data/compute ratio by keeping EPOCHS (total passes over
+    the data) constant: steps must scale with dataset size.
+    """
+    if n_source <= 0 or n_out <= 0:
+        return
+    mult = n_out / n_source
+    print()
+    print(f"chinchilla note: dataset grew {mult:.1f}x ({n_source} -> {n_out} episodes).")
+    if mult > 1.001:
+        print(f"  Training on this output needs ~{mult:.1f}x the STEPS of the source's")
+        print(f"  recipe to hold epochs (passes over the data) constant — or use")
+        print(f"  EPOCHS=<n> in train_act.sh / m1 train.sh, which derives STEPS from")
+        print(f"  the dataset size automatically. Comparing against a source-trained")
+        print(f"  policy at equal STEPS is confounded: each sample is seen 1/{mult:.1f}x as often.")
 
 
 def _new_writer(out: Path, args: argparse.Namespace, first: Episode) -> LeRobotStreamingWriter:
