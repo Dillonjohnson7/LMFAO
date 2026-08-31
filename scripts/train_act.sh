@@ -9,7 +9,35 @@ DATASET_REPO_ID="${DATASET_REPO_ID:-local/lmfao_dataset}"
 OUTPUT_DIR="${OUTPUT_DIR:-${LMFAO_DATA_ROOT:-/workspace/data}/runs/act_single}"
 POLICY_DEVICE="${POLICY_DEVICE:-cuda}"
 STEPS="${STEPS:-100000}"
+
+
 BATCH_SIZE="${BATCH_SIZE:-8}"
+# ---- EPOCHS mode: hold passes-over-the-data constant across dataset sizes ----
+# The stock-vs-augmented eval (76% vs 8%, Aug 2026) was confounded: fixed STEPS
+# over a 3x-bigger augmented dataset trained each sample 1/3 as often. Per
+# Andrew's guidance: with model size fixed, keep the chinchilla-style ratio by
+# holding EPOCHS (total pass-throughs) constant-or-growing, i.e. STEPS must
+# scale with dataset size. Set EPOCHS to derive STEPS from the dataset itself:
+#   EPOCHS=34 DATASET=... bash train.sh     # 34 ~= the stock baseline
+#     (ACT 100k steps x batch 8 = 800k samples / 23,233 frames = 34.4 epochs)
+# EPOCHS overrides STEPS. Works for local roots and HF repo ids.
+if [ -n "${EPOCHS:-}" ]; then
+  FRAMES=$(python3 - "$DATASET_ROOT" <<'PYEOF'
+import json, os, sys
+d = sys.argv[1]
+p = os.path.join(d, "meta", "info.json")
+if os.path.exists(p):
+    info = json.load(open(p))
+else:
+    from huggingface_hub import hf_hub_download
+    info = json.load(open(hf_hub_download(d, "meta/info.json", repo_type="dataset")))
+print(info["total_frames"])
+PYEOF
+)
+  STEPS=$(( (EPOCHS * FRAMES + BATCH_SIZE - 1) / BATCH_SIZE ))
+  echo "EPOCHS=$EPOCHS over $FRAMES frames @ batch $BATCH_SIZE -> STEPS=$STEPS"
+fi
+
 SEED="${SEED:-7}"
 SAVE_CHECKPOINT="${SAVE_CHECKPOINT:-true}"
 WANDB_ENABLE="${WANDB_ENABLE:-false}"
