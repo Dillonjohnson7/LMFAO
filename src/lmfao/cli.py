@@ -384,9 +384,9 @@ def _print_chinchilla_guidance(n_source: int, n_out: int) -> None:
     print(f"chinchilla note: dataset grew {mult:.1f}x ({n_source} -> {n_out} episodes).")
     if mult > 1.001:
         print(f"  Training on this output needs ~{mult:.1f}x the STEPS of the source's")
-        print(f"  recipe to hold epochs (passes over the data) constant — or use")
-        print(f"  EPOCHS=<n> in train_act.sh / m1 train.sh, which derives STEPS from")
-        print(f"  the dataset size automatically. Comparing against a source-trained")
+        print("  recipe to hold epochs (passes over the data) constant — or use")
+        print("  EPOCHS=<n> in train_act.sh / m1 train.sh, which derives STEPS from")
+        print("  the dataset size automatically. Comparing against a source-trained")
         print(f"  policy at equal STEPS is confounded: each sample is seen 1/{mult:.1f}x as often.")
 
 
